@@ -1,6 +1,6 @@
 # 神之牛仔帽（HatMod）
 
-![黑帽「预知」：蓄力完成的一刻，视野整段变为黑白](https://cdn.jsdelivr.net/gh/fadersketch/hatmod@ca78d556850c64b703642c1473bab11cc18ac12c/gallery/01-black-hat-foresight.jpg)
+![黑帽「预知」：蓄力完成的一刻，视野整段变为黑白](https://fadersketch.github.io/hatmod/gallery/01-black-hat-foresight.jpg)
 
 一个 Minecraft 模组：三顶**牛仔帽**（黑 / 白 / 红）。戴上之后会像手电筒一样，
 对着面前的敌人**持续照射一道光柱**，并附带各自专属的技能与附魔。
