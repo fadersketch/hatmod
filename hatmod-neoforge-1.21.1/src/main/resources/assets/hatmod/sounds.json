@@ -1,0 +1,29 @@
+{
+  "music_black": {
+    "sounds": [
+      {
+        "name": "hatmod:music_black",
+        "stream": false,
+        "attenuation_distance": 16
+      }
+    ]
+  },
+  "music_white": {
+    "sounds": [
+      {
+        "name": "hatmod:music_white",
+        "stream": false,
+        "attenuation_distance": 16
+      }
+    ]
+  },
+  "music_red": {
+    "sounds": [
+      {
+        "name": "hatmod:music_red",
+        "stream": false,
+        "attenuation_distance": 16
+      }
+    ]
+  }
+}

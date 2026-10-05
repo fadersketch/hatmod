@@ -1,0 +1,14 @@
+{
+  "replace": false,
+  "values": [
+    "hatmod:formless",
+    "hatmod:afterimage",
+    "hatmod:soul_reap",
+    "hatmod:requiem",
+    "hatmod:benediction",
+    "hatmod:radiance",
+    "hatmod:dominion",
+    "hatmod:bloodthirst",
+    "hatmod:conflagration"
+  ]
+}

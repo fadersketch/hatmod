@@ -1,0 +1,78 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'net.minecraftforge.gradle' version '[6.0.24,6.2)'
+}
+
+version = '1.0.0'
+group = 'com.hatmod'
+base {
+    archivesName = 'hatmod-forge-1.20.1'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+minecraft {
+    mappings channel: 'official', version: '1.20.1'
+    copyIdeResources = true
+
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            mods {
+                hatmod {
+                    source sourceSets.main
+                }
+            }
+        }
+        client {
+            property 'forge.enabledGameTestNamespaces', 'hatmod'
+        }
+        server {
+            args '--nogui'
+            property 'forge.enabledGameTestNamespaces', 'hatmod'
+        }
+    }
+}
+
+repositories {
+    maven {
+        name = 'MinecraftForge'
+        url = 'https://maven.minecraftforge.net/'
+    }
+}
+
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.4.26'
+    // Curios 的 API：只用于编译，不会打进成品 jar。
+    // 因为构建是 --offline 跑的，这里直接用放在 libs/ 里的 API jar，不去连 maven。
+    // 运行时 Curios 是**软依赖**：没装也能正常跑（见 CuriosCompat / HatAbilities.hatStack）。
+    compileOnly files('libs/curios-forge-5.14.1+1.20.1-api.jar')
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+tasks.named('processResources', ProcessResources).configure {
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+}
+
+jar {
+    manifest {
+        attributes([
+                'Specification-Title'     : 'hatmod',
+                'Specification-Vendor'    : 'HatMod',
+                'Specification-Version'   : '1',
+                'Implementation-Title'    : project.name,
+                'Implementation-Version'  : project.version,
+                'Implementation-Vendor'   : 'HatMod'
+        ])
+    }
+}

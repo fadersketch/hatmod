@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "equipment",
+  "pattern": [
+    "LLL",
+    "LDN",
+    "NNN"
+  ],
+  "key": {
+    "L": { "item": "minecraft:leather" },
+    "D": { "item": "minecraft:black_dye" },
+    "N": { "item": "minecraft:nether_star" }
+  },
+  "result": {
+    "item": "hatmod:black_hat"
+  }
+}

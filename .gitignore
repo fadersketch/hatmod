@@ -1,0 +1,21 @@
+# 构建产物
+build/
+.gradle/
+run/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# Python
+__pycache__/
+*.pyc
+
+# 系统 / 杂项
+*.log
+.DS_Store
+Thumbs.db
