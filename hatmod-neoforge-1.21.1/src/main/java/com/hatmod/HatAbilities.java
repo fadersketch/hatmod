@@ -667,9 +667,17 @@ public final class HatAbilities {
      *
      * <p>三顶原色帽没有路线概念，直接返回它自己。
      */
-    private static HatType nextRoute(HatState state, ServerLevel level) {
+    private static void nextRoute(HatState state, ServerLevel level) {
         if (state.type != HatType.ALL) {
-            return state.type;
+            state.route = state.type;
+            return;
+        }
+        // 调试用的「强制路线」：设了某条颜色就每轮都走它（见 HatSettings.setForcedRoute）。
+        // 没设（默认 random）才走下面的洗牌袋。
+        HatType forced = HatSettings.forcedRouteType();
+        if (forced != null) {
+            state.route = forced;
+            return;
         }
         if (state.routeBag == null || state.routeBagIndex >= state.routeBag.length) {
             state.routeBag = HatType.routeChoices();
@@ -688,7 +696,7 @@ public final class HatAbilities {
             }
             state.routeBagIndex = 0;
         }
-        return state.routeBag[state.routeBagIndex++];
+        state.route = state.routeBag[state.routeBagIndex++];
     }
 
     /** 进入蓄力阶段：重置本轮状态并播放这顶帽子（或「全」这一轮路线）的音乐。 */
@@ -696,7 +704,7 @@ public final class HatAbilities {
         ItemStack hat = hatStack(wearer);
         // 「全」每轮随机取一条路线（黑/白/红，随机不重复）；三顶原色帽就是它自己。
         // 路线决定本轮的：蓄力/照射时长、BGM、粒子颜色、光柱帧伤、以及帽子渲染颜色。
-        state.route = nextRoute(state, level);
+        nextRoute(state, level);
         // 附魔「闪避」多给几次瞬移闪避；蓄力时长本身**不受附魔影响**（要跟音乐对齐）
         state.charge = HatSettings.chargeTicks(state.route);
         state.blinks = BLINKS_PER_CHARGE + HatEnchants.extraBlinks(hat);
@@ -2093,18 +2101,18 @@ public final class HatAbilities {
      * 也拦不住它（见 {@link #damageBeam}）。
      *
      * @param hatType 这顶帽子的类型（「全」是 ALL）：决定伤害类型 id、附加百分比等**配置**
-     * @param route   「全」本轮走的路线；三顶原色帽就是它自己。**帧伤数值**取它的
-     *                {@link HatType#routeDamage}（黑 12 / 白 10 / 红 15），
+     * @param route   「全」本轮走的路线；三顶原色帽就是它自己。**帧伤数值**取
+     *                {@link HatSettings#routeDamage}（出厂黑 12 / 白 10 / 红 15，可调），
      *                所以「全」轮到哪条路线就用哪条的帧伤。
      */
     private static void damageBeam(ServerLevel level, LivingEntity wearer, HatType hatType,
                                    HatType route, ItemStack hat, List<LivingEntity> targets) {
         // 每刻固定伤害：
         //   · 三顶原色帽 —— 自己的 damagePerTick（默认 10，可用调参器改）；
-        //   · 「全」—— 按本轮路线取 12/10/15（routeDamage），**不读「全」自己配置的 15**，
-        //     这样「黑路线 = 黑帽手感」才成立。
+        //   · 「全」—— 按本轮路线取（默认黑 12 / 白 10 / 红 15，可在调参器「全帽」页改），
+        //     **不读「全」自己配置的 damagePerTick**，这样「黑路线 = 黑帽手感」才成立。
         float flatDamage = hatType == HatType.ALL
-                ? HatType.routeDamage(route)
+                ? HatSettings.routeDamage(route)
                 : HatSettings.damagePerTick(hatType);
         // 戴帽者身上的力量/虚弱折成倍率，固定伤害和百分比伤害一起吃（见 beamPowerMultiplier）
         float power = beamPowerMultiplier(wearer);

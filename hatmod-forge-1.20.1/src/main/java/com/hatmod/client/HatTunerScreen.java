@@ -1,6 +1,7 @@
 package com.hatmod.client;
 
 import com.hatmod.HatNetwork;
+import com.hatmod.HatSettings;
 import com.hatmod.HatType;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.gui.GuiGraphics;
@@ -38,6 +39,13 @@ public class HatTunerScreen extends Screen {
             "hatmod.tuner.type",
     };
 
+    /** 选中「全」时，前三个框改成这三条路线的帧伤（标签也跟着换）。 */
+    private static final String[] ALL_ROUTE_KEYS = {
+            "hatmod.tuner.route.black",
+            "hatmod.tuner.route.white",
+            "hatmod.tuner.route.red",
+    };
+
     private static final int ROW_H = 24;
     private static final int FIELD_H = 18;
     private static final int FIELD_W = 200;
@@ -45,6 +53,11 @@ public class HatTunerScreen extends Screen {
 
     private final EditBox[] fields = new EditBox[FIELD_KEYS.length];
     private final Button[] hatButtons = new Button[HatType.values().length];
+
+    /** 「全」页专用：强制路线的循环按钮（随机 → 黑 → 白 → 红）。 */
+    private Button forcedRouteButton;
+    /** 强制路线的待保存值：{@code random} / black / white / red。 */
+    private String forcedRoute;
 
     private HatType selected = HatType.BLACK;
 
@@ -115,7 +128,41 @@ public class HatTunerScreen extends Screen {
         }).bounds(this.width - 118, 10, 108, 20).build();
         addRenderableWidget(this.ownBgmButton);
 
+        // 「全」页专用：强制路线循环按钮（随机 → 黑 → 白 → 红）。只在选中「全」时可见。
+        // y 夹一下，保证最小 GUI 缩放（320×240）下也不会掉出屏幕外。
+        this.forcedRoute = ClientHatSettings.forcedRoute();
+        int routeY = Math.min(bottomY() + 22, Math.max(0, this.height - 22));
+        this.forcedRouteButton = Button.builder(forcedRouteLabel(), button -> {
+            this.forcedRoute = nextForcedRoute(this.forcedRoute);
+            button.setMessage(forcedRouteLabel());
+        }).bounds(this.width / 2 - 90, routeY, 180, 20).build();
+        addRenderableWidget(this.forcedRouteButton);
+
         fillFromSelection();
+    }
+
+    /** 强制路线循环：随机 → 黑 → 白 → 红 → 随机。 */
+    private static String nextForcedRoute(String current) {
+        if (HatType.BLACK.id().equals(current)) {
+            return HatType.WHITE.id();
+        }
+        if (HatType.WHITE.id().equals(current)) {
+            return HatType.RED.id();
+        }
+        if (HatType.RED.id().equals(current)) {
+            return HatSettings.ROUTE_RANDOM;
+        }
+        return HatType.BLACK.id();
+    }
+
+    /** 强制路线按钮上的文字：名字 + 当前（待保存的）值。 */
+    private Component forcedRouteLabel() {
+        String valueKey = HatSettings.ROUTE_RANDOM.equals(this.forcedRoute)
+                ? "hatmod.tuner.route.random"
+                : "hatmod.tuner.hat." + this.forcedRoute;
+        return Component.translatable("hatmod.tuner.forcedRoute")
+                .append(Component.literal(": "))
+                .append(Component.translatable(valueKey));
     }
 
     /** 开关按钮上的文字：名字 + 当前（待保存的）状态。 */
@@ -133,12 +180,31 @@ public class HatTunerScreen extends Screen {
 
     private void fillFromSelection() {
         ClientHatSettings.Snapshot snapshot = ClientHatSettings.get(this.selected);
-        fields[0].setValue(Integer.toString(snapshot.chargeTicks));
-        fields[1].setValue(Integer.toString(snapshot.flashTicks));
-        fields[2].setValue(format(snapshot.damagePerTick));
+        if (this.selected == HatType.ALL) {
+            // 「全」页：前三个框改成三条路线的帧伤（蓄力/照射是路线驱动的，不在这里调），
+            // 后三个（附加% / 下限% / 伤害类型）仍是「全」自己那份配置。
+            fields[0].setValue(format(ClientHatSettings.routeDamage(HatType.BLACK)));
+            fields[1].setValue(format(ClientHatSettings.routeDamage(HatType.WHITE)));
+            fields[2].setValue(format(ClientHatSettings.routeDamage(HatType.RED)));
+        } else {
+            fields[0].setValue(Integer.toString(snapshot.chargeTicks));
+            fields[1].setValue(Integer.toString(snapshot.flashTicks));
+            fields[2].setValue(format(snapshot.damagePerTick));
+        }
         fields[3].setValue(format(snapshot.healthDamageRatio));
         fields[4].setValue(format(snapshot.healthDamageFloor));
         fields[5].setValue(snapshot.damageType);
+
+        // 蓄力/照射两个框在「全」页不适用（路线驱动），禁掉免得以为填了会生效
+        fields[0].setEditable(this.selected != HatType.ALL);
+        fields[1].setEditable(this.selected != HatType.ALL);
+
+        if (this.forcedRouteButton != null) {
+            this.forcedRoute = ClientHatSettings.forcedRoute();
+            this.forcedRouteButton.visible = this.selected == HatType.ALL;
+            this.forcedRouteButton.active = this.selected == HatType.ALL;
+            this.forcedRouteButton.setMessage(forcedRouteLabel());
+        }
 
         HatType[] types = HatType.values();
         for (int i = 0; i < types.length; i++) {
@@ -151,21 +217,42 @@ public class HatTunerScreen extends Screen {
 
     /** 「恢复默认」只改界面，点保存才真的生效。 */
     private void resetFields() {
-        fields[0].setValue(Integer.toString(this.selected.chargeTicks()));
-        fields[1].setValue(Integer.toString(this.selected.flashTicks()));
-        fields[2].setValue(format(this.selected.damagePerTick()));
-        fields[3].setValue(format(com.hatmod.HatSettings.DEFAULT_HEALTH_DAMAGE_RATIO));
-        fields[4].setValue(format(com.hatmod.HatSettings.DEFAULT_HEALTH_DAMAGE_FLOOR));
-        fields[5].setValue(com.hatmod.HatSettings.DEFAULT_DAMAGE_TYPE);
+        if (this.selected == HatType.ALL) {
+            fields[0].setValue(format(HatSettings.DEFAULT_ROUTE_DAMAGE_BLACK));
+            fields[1].setValue(format(HatSettings.DEFAULT_ROUTE_DAMAGE_WHITE));
+            fields[2].setValue(format(HatSettings.DEFAULT_ROUTE_DAMAGE_RED));
+            this.forcedRoute = HatSettings.ROUTE_RANDOM;
+            if (this.forcedRouteButton != null) {
+                this.forcedRouteButton.setMessage(forcedRouteLabel());
+            }
+        } else {
+            fields[0].setValue(Integer.toString(this.selected.chargeTicks()));
+            fields[1].setValue(Integer.toString(this.selected.flashTicks()));
+            fields[2].setValue(format(this.selected.damagePerTick()));
+        }
+        fields[3].setValue(format(HatSettings.DEFAULT_HEALTH_DAMAGE_RATIO));
+        fields[4].setValue(format(HatSettings.DEFAULT_HEALTH_DAMAGE_FLOOR));
+        fields[5].setValue(HatSettings.DEFAULT_DAMAGE_TYPE);
     }
 
     private void save() {
         if (this.minecraft == null || this.minecraft.player == null) {
             return;
         }
-        Integer chargeTicks = parseInt(0);
-        Integer flashTicks = parseInt(1);
-        Float damagePerTick = parseFloat(2);
+        Integer chargeTicks;
+        Integer flashTicks;
+        Float damagePerTick;
+        if (this.selected == HatType.ALL) {
+            // 「全」页前三个框是路线帧伤；蓄力/照射是路线驱动的，原样提交「全」自己那份占位值
+            ClientHatSettings.Snapshot snapshot = ClientHatSettings.get(HatType.ALL);
+            chargeTicks = snapshot.chargeTicks;
+            flashTicks = snapshot.flashTicks;
+            damagePerTick = snapshot.damagePerTick;
+        } else {
+            chargeTicks = parseInt(0);
+            flashTicks = parseInt(1);
+            damagePerTick = parseFloat(2);
+        }
         Float ratio = parseFloat(3);
         Float floor = parseFloat(4);
         if (chargeTicks == null || flashTicks == null || damagePerTick == null
@@ -173,20 +260,46 @@ public class HatTunerScreen extends Screen {
             complain("hatmod.tuner.badNumber");
             return;
         }
+        // 「全」页的三条路线帧伤：只有选中「全」时才从框里读（那时前三个框就是它们）；
+        // 编辑别的帽子时前三个框是蓄力/照射/帧伤，不能拿来当路线帧伤，沿用客户端当前值。
+        float routeBlack;
+        float routeWhite;
+        float routeRed;
+        if (this.selected == HatType.ALL) {
+            Float parsedBlack = parseFloat(0);
+            Float parsedWhite = parseFloat(1);
+            Float parsedRed = parseFloat(2);
+            if (parsedBlack == null || parsedWhite == null || parsedRed == null) {
+                complain("hatmod.tuner.badNumber");
+                return;
+            }
+            routeBlack = parsedBlack;
+            routeWhite = parsedWhite;
+            routeRed = parsedRed;
+        } else {
+            routeBlack = ClientHatSettings.routeDamage(HatType.BLACK);
+            routeWhite = ClientHatSettings.routeDamage(HatType.WHITE);
+            routeRed = ClientHatSettings.routeDamage(HatType.RED);
+        }
         String damageType = normalizeNumber(fields[5].getValue()).replace('\uFF1A', ':');
         if (damageType.isEmpty()) {
             complain("hatmod.tuner.badType");
             return;
         }
 
+        String forced = this.forcedRoute == null ? HatSettings.ROUTE_RANDOM : this.forcedRoute;
         HatNetwork.sendSettingsUpdate(this.selected, chargeTicks, flashTicks,
-                damagePerTick, ratio, floor, damageType, this.ownBgmPriority);
+                damagePerTick, ratio, floor, damageType, this.ownBgmPriority,
+                routeBlack, routeWhite, routeRed, forced);
         // 本地立刻回显：界面上「当前值」马上就是刚填的这份，不用等服务端回包。
         // 真正生效的仍然是服务端那份 —— 服务端改完会广播回来覆盖这里；
         // 万一被拒（非创造/非 OP），回包里带的也是服务端的真实值，界面会自己纠回来。
         ClientHatSettings.set(this.selected, chargeTicks, flashTicks,
                 damagePerTick, ratio, floor, damageType);
         ClientHatSettings.setOwnBgmPriority(this.ownBgmPriority);
+        // 强制路线只在「全」页有意义，也只在那一页改
+        ClientHatSettings.setRoute(routeBlack, routeWhite, routeRed,
+                this.selected == HatType.ALL ? forced : ClientHatSettings.forcedRoute());
         onClose();
     }
 
@@ -255,9 +368,12 @@ public class HatTunerScreen extends Screen {
         graphics.drawCenteredString(this.font, this.title, this.width / 2, 14, 0xFFFFFF);
 
         int labelX = left() + 4;
+        boolean all = this.selected == HatType.ALL;
         for (int i = 0; i < FIELD_KEYS.length; i++) {
+            // 「全」页：前三个框的标签换成黑/白/红三条路线的帧伤
+            String key = all && i < ALL_ROUTE_KEYS.length ? ALL_ROUTE_KEYS[i] : FIELD_KEYS[i];
             int y = FIRST_ROW_Y + i * ROW_H + (FIELD_H - this.font.lineHeight) / 2 + 1;
-            graphics.drawString(this.font, Component.translatable(FIELD_KEYS[i]), labelX, y, 0xA0A0A0);
+            graphics.drawString(this.font, Component.translatable(key), labelX, y, 0xA0A0A0);
         }
 
         // 把界面上正在编辑的帽子写在按钮那排右边，省得看按钮置灰猜
@@ -265,10 +381,11 @@ public class HatTunerScreen extends Screen {
                 Component.translatable("hatmod.tuner.hat." + this.selected.id()));
         graphics.drawCenteredString(this.font, editing, this.width / 2, bottomY() - 12, 0x808080);
 
-        // 「全」的数值是路线驱动的：下面这几个框填了也不生效，写一行说明免得白改
-        if (this.selected == HatType.ALL) {
+        // 「全」页的说明：蓄力/照射由路线决定（框已禁用），前三个框是三条路线的帧伤
+        if (all) {
+            int noteY = Math.min(bottomY() + 46, Math.max(0, this.height - 10));
             graphics.drawCenteredString(this.font, Component.translatable("hatmod.tuner.allRouteNote"),
-                    this.width / 2, bottomY() + 24, 0xB06060);
+                    this.width / 2, noteY, 0xB06060);
         }
     }
 

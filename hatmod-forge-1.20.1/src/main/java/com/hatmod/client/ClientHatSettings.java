@@ -18,6 +18,14 @@ public final class ClientHatSettings {
     /** 全局开关「自己的 BGM 优先」，随服务端同步过来；没同步前按出厂默认（开启）。 */
     private static boolean ownBgmPriority = HatSettings.DEFAULT_OWN_BGM_PRIORITY;
 
+    /** 「全」三条路线的帧伤，随服务端同步过来；没同步前按出厂值（12/10/15）。 */
+    private static float routeDamageBlack = HatSettings.DEFAULT_ROUTE_DAMAGE_BLACK;
+    private static float routeDamageWhite = HatSettings.DEFAULT_ROUTE_DAMAGE_WHITE;
+    private static float routeDamageRed = HatSettings.DEFAULT_ROUTE_DAMAGE_RED;
+
+    /** 「强制路线」：{@code random} 或 black/white/red。 */
+    private static String forcedRoute = HatSettings.ROUTE_RANDOM;
+
     private ClientHatSettings() {
     }
 
@@ -27,6 +35,27 @@ public final class ClientHatSettings {
 
     public static void setOwnBgmPriority(boolean value) {
         ownBgmPriority = value;
+    }
+
+    public static float routeDamage(HatType route) {
+        if (route == HatType.BLACK) {
+            return routeDamageBlack;
+        }
+        if (route == HatType.RED) {
+            return routeDamageRed;
+        }
+        return routeDamageWhite;
+    }
+
+    public static String forcedRoute() {
+        return forcedRoute;
+    }
+
+    public static void setRoute(float black, float white, float red, String forced) {
+        routeDamageBlack = black;
+        routeDamageWhite = white;
+        routeDamageRed = red;
+        forcedRoute = forced == null ? HatSettings.ROUTE_RANDOM : forced;
     }
 
     /** 一份只读参数（就是个值对象，字段 public 方便界面直接读）。 */
@@ -83,6 +112,7 @@ public final class ClientHatSettings {
                     snapshot.healthDamageRatio(), snapshot.healthDamageFloor(), snapshot.damageType());
         }
         ownBgmPriority = msg.ownBgmPriority();
+        setRoute(msg.route().black(), msg.route().white(), msg.route().red(), msg.route().forcedRoute());
 
         net.minecraft.client.Minecraft minecraft = net.minecraft.client.Minecraft.getInstance();
         if (minecraft.player == null) {

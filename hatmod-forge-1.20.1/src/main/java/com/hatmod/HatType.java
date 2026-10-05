@@ -75,8 +75,12 @@ public enum HatType {
     /**
      * 「全」每轮随机取一条路线时，三条路线各自的**光柱帧伤**。
      *
-     * <p>只给「全」用：黑 12 / 白 10 / 红 15。三顶原色帽本身仍是各自的
+     * <p>只给「全」用，出厂值黑 12 / 白 10 / 红 15；三顶原色帽本身仍是各自的
      * {@link #damagePerTick}（统一 10，可用调参器改），不受这里影响。
+     *
+     * <p>实际数值现在由 {@link HatSettings#routeDamage} 提供（可在调参器「全帽」页或
+     * {@code /hatmod routedamage} 改、落盘到 {@code config/hatmod.json}）。这个方法保留为
+     * **出厂默认值**的来源，配置缺失时按它走。
      *
      * <p>刻意写成 if/else 而不是 {@code switch}/{@code EnumMap}：对枚举做 switch 会让 javac
      * 多生成一个合成类，而本模组每个类都要登记进 {@link HatPreloader}（见那里的注释）。

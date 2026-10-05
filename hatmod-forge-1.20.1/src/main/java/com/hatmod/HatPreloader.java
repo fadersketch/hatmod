@@ -40,6 +40,7 @@ public final class HatPreloader {
             "com.hatmod.HatNetwork$MusicMessage",
             "com.hatmod.HatNetwork$SettingsSyncMessage",
             "com.hatmod.HatNetwork$SettingsSyncMessage$Snapshot",
+            "com.hatmod.HatNetwork$RouteSnapshot",
             "com.hatmod.HatNetwork$SettingsUpdateMessage",
             "com.hatmod.HatNetwork$RouteMessage",
             "com.hatmod.HatParticles",

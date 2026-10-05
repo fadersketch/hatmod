@@ -71,6 +71,25 @@ public final class HatSettings {
      */
     public static final boolean DEFAULT_OWN_BGM_PRIORITY = true;
 
+    /**
+     * 「全」三条路线（黑 / 白 / 红）各自的默认帧伤。
+     *
+     * <p>这三个值只给「全」用（直接取 {@link HatType#routeDamage} 的出厂 12/10/15，不重复写一遍数字）；
+     * 三顶原色帽仍走各自的 {@link #damagePerTick}，不受它们影响。
+     * 可在调参器的「全帽」页改，或用 {@code /hatmod routedamage} 改。
+     */
+    public static final float DEFAULT_ROUTE_DAMAGE_BLACK = HatType.routeDamage(HatType.BLACK);
+    public static final float DEFAULT_ROUTE_DAMAGE_WHITE = HatType.routeDamage(HatType.WHITE);
+    public static final float DEFAULT_ROUTE_DAMAGE_RED = HatType.routeDamage(HatType.RED);
+
+    /**
+     * 「强制路线」的默认值：{@code random}，也就是正常玩法里的「每轮随机取一条」。
+     *
+     * <p>调试时把它设成 {@code black} / {@code white} / {@code red}，「全」就会**每轮都走那一条**，
+     * 用来逐条核对时长、BGM、粒子颜色和帽子渲染颜色（否则要等随机轮到）。
+     */
+    public static final String ROUTE_RANDOM = "random";
+
     /** 界面里允许的范围，服务端也会按同一套夹一遍（防手改配置文件写出离谱数值）。 */
     public static final int MIN_TICKS = 0;
     public static final int MAX_TICKS = 72000;
@@ -87,6 +106,14 @@ public final class HatSettings {
 
     /** 全局开关「自己的 BGM 优先」的当前值（服务端权威）。 */
     private static boolean ownBgmPriority = DEFAULT_OWN_BGM_PRIORITY;
+
+    /** 「全」三条路线的帧伤当前值（服务端权威）。 */
+    private static float routeDamageBlack = DEFAULT_ROUTE_DAMAGE_BLACK;
+    private static float routeDamageWhite = DEFAULT_ROUTE_DAMAGE_WHITE;
+    private static float routeDamageRed = DEFAULT_ROUTE_DAMAGE_RED;
+
+    /** 「强制路线」当前值；{@link #ROUTE_RANDOM} 表示正常随机。 */
+    private static String forcedRoute = ROUTE_RANDOM;
 
     private HatSettings() {
     }
@@ -110,6 +137,24 @@ public final class HatSettings {
          * <b>不需要为此把 {@link #CONFIG_VERSION} 加一</b>，也就不会把用户调好的时长冲掉。
          */
         public boolean ownBgmPriority = DEFAULT_OWN_BGM_PRIORITY;
+
+        /**
+         * 「全」三条路线各自的帧伤（出厂 12 / 10 / 15）。
+         *
+         * <p>与 {@link #ownBgmPriority} 同理：字段带初始化值，老配置文件里没有它们时
+         * 会自动落成出厂值，<b>不需要为此加 {@link #CONFIG_VERSION}</b>，
+         * 也就不会把用户已经调好的时长/伤害冲掉。
+         */
+        public float routeDamageBlack = DEFAULT_ROUTE_DAMAGE_BLACK;
+        public float routeDamageWhite = DEFAULT_ROUTE_DAMAGE_WHITE;
+        public float routeDamageRed = DEFAULT_ROUTE_DAMAGE_RED;
+
+        /**
+         * 「强制路线」：{@link #ROUTE_RANDOM}（默认，正常随机）或 {@code black} / {@code white} / {@code red}。
+         *
+         * <p>调试用：设成某条颜色后，「全」每轮都走那一条，方便逐条核对时长 / BGM / 颜色。
+         */
+        public String forcedRoute = ROUTE_RANDOM;
     }
 
     /** 一顶帽子的一组参数。字段 public、有默认构造，是给 Gson 直接读写用的。 */
@@ -207,6 +252,80 @@ public final class HatSettings {
         return ownBgmPriority;
     }
 
+    /**
+     * 「全」走某条路线时的光柱帧伤。
+     *
+     * <p>三顶原色帽不走这里（它们用各自的 {@link #damagePerTick}）；「全」每轮取到哪条路线
+     * 就用哪条的值 —— 见 {@code HatAbilities.damageBeam}。入参不是三条路线之一时退回白帽那份。
+     */
+    public static synchronized float routeDamage(HatType route) {
+        ensureLoaded();
+        if (route == HatType.BLACK) {
+            return routeDamageBlack;
+        }
+        if (route == HatType.RED) {
+            return routeDamageRed;
+        }
+        return routeDamageWhite;
+    }
+
+    /**
+     * 「强制路线」：{@link #ROUTE_RANDOM} 或 black/white/red；非 {@link #ROUTE_RANDOM}
+     * 表示「全」每轮都固定走这一条（调试用）。
+     */
+    public static synchronized String forcedRoute() {
+        ensureLoaded();
+        return forcedRoute;
+    }
+
+    /** 强制路线对应的 {@link HatType}；没强制（随机）时返回 {@code null}。 */
+    public static HatType forcedRouteType() {
+        String forced = forcedRoute();
+        if (forced == null || ROUTE_RANDOM.equals(forced)) {
+            return null;
+        }
+        for (HatType type : HatType.values()) {
+            if (type.id().equals(forced)) {
+                return type;
+            }
+        }
+        return null;
+    }
+
+    /** 改「全」三条路线的帧伤（调参器「全帽」页 / 命令调用）。 */
+    public static synchronized void setRouteDamage(float black, float white, float red) {
+        ensureLoaded();
+        routeDamageBlack = clamp(black, MIN_DAMAGE, MAX_DAMAGE);
+        routeDamageWhite = clamp(white, MIN_DAMAGE, MAX_DAMAGE);
+        routeDamageRed = clamp(red, MIN_DAMAGE, MAX_DAMAGE);
+        save();
+    }
+
+    /**
+     * 改「强制路线」。
+     *
+     * @param forced {@link #ROUTE_RANDOM} 或 black/white/red；其它值一律当成随机
+     */
+    public static synchronized void setForcedRoute(String forced) {
+        ensureLoaded();
+        forcedRoute = normalizeForcedRoute(forced);
+        save();
+    }
+
+    /** 把外部传进来的字符串归一成 {@code random}/black/white/red。 */
+    private static String normalizeForcedRoute(String forced) {
+        if (forced == null) {
+            return ROUTE_RANDOM;
+        }
+        String trimmed = forced.trim().toLowerCase(java.util.Locale.ROOT);
+        for (HatType type : HatType.values()) {
+            if (type.id().equals(trimmed) || type.id().equals(trimmed + "_hat")) {
+                return type.id();
+            }
+        }
+        return ROUTE_RANDOM;
+    }
+
     // ------------------------------------------------------------------
     // 修改 / 落盘
     // ------------------------------------------------------------------
@@ -257,6 +376,10 @@ public final class HatSettings {
         }
         loaded = true;
         ownBgmPriority = DEFAULT_OWN_BGM_PRIORITY;
+        routeDamageBlack = DEFAULT_ROUTE_DAMAGE_BLACK;
+        routeDamageWhite = DEFAULT_ROUTE_DAMAGE_WHITE;
+        routeDamageRed = DEFAULT_ROUTE_DAMAGE_RED;
+        forcedRoute = ROUTE_RANDOM;
         for (HatType type : HatType.values()) {
             ENTRIES.put(type, new Entry(type));
         }
@@ -281,6 +404,10 @@ public final class HatSettings {
                 return;
             }
             ownBgmPriority = fromDisk.ownBgmPriority;
+            routeDamageBlack = clamp(fromDisk.routeDamageBlack, MIN_DAMAGE, MAX_DAMAGE);
+            routeDamageWhite = clamp(fromDisk.routeDamageWhite, MIN_DAMAGE, MAX_DAMAGE);
+            routeDamageRed = clamp(fromDisk.routeDamageRed, MIN_DAMAGE, MAX_DAMAGE);
+            forcedRoute = normalizeForcedRoute(fromDisk.forcedRoute);
             for (HatType type : HatType.values()) {
                 Entry stored = fromDisk.hats.get(type.id());
                 if (stored == null) {
@@ -304,6 +431,10 @@ public final class HatSettings {
         ConfigFile out = new ConfigFile();
         out.version = CONFIG_VERSION;
         out.ownBgmPriority = ownBgmPriority;
+        out.routeDamageBlack = routeDamageBlack;
+        out.routeDamageWhite = routeDamageWhite;
+        out.routeDamageRed = routeDamageRed;
+        out.forcedRoute = forcedRoute;
         out.hats = new LinkedHashMap<>();
         for (HatType type : HatType.values()) {
             Entry entry = ENTRIES.get(type);

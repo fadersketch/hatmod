@@ -31,7 +31,15 @@ import java.util.function.Supplier;
  * </ul>
  */
 public final class HatNetwork {
-    private static final String PROTOCOL = "1";
+    /**
+     * 协议版本。
+     *
+     * <p>调参同步包（{@code SettingsSyncMessage}/{@code SettingsUpdateMessage}）在加入
+     * 「全」的路线帧伤 / 强制路线之后，字段变多了 —— 新旧两端互相解码会读错位置，
+     * 所以这里从 {@code "1"} 提到 {@code "2"}：版本不一致时 Forge 直接拒绝连接，
+     * 而不是让两边拿错值跑。以后只要改动任何包的字段布局，都要把它加一。
+     */
+    private static final String PROTOCOL = "2";
 
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             HatMod.id("main"), () -> PROTOCOL, PROTOCOL::equals, PROTOCOL::equals);
@@ -104,7 +112,7 @@ public final class HatNetwork {
     /** 把当前参数发给一个玩家（登录时、以及改完参数后广播）。 */
     public static void sendSettings(ServerPlayer player, int feedback) {
         CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
-                new SettingsSyncMessage(snapshot(), HatSettings.ownBgmPriority(), feedback));
+                new SettingsSyncMessage(snapshot(), HatSettings.ownBgmPriority(), routeSnapshot(), feedback));
     }
 
     /** 广播给所有人（feedback = 无提示）。 */
@@ -113,24 +121,38 @@ public final class HatNetwork {
             return;
         }
         CHANNEL.send(PacketDistributor.ALL.noArg(),
-                new SettingsSyncMessage(snapshot(), HatSettings.ownBgmPriority(), FEEDBACK_NONE));
+                new SettingsSyncMessage(snapshot(), HatSettings.ownBgmPriority(), routeSnapshot(), FEEDBACK_NONE));
     }
 
     /**
-     * 客户端「保存」按钮：请求服务端改这顶帽子的参数，以及全局开关「自己的 BGM 优先」。
+     * 客户端「保存」按钮：请求服务端改这顶帽子的参数、全局开关「自己的 BGM 优先」，
+     * 以及「全」的三条路线帧伤 / 强制路线。
      */
     public static void sendSettingsUpdate(HatType type, int chargeTicks, int flashTicks,
                                           float damagePerTick, float healthDamageRatio,
                                           float healthDamageFloor, String damageType,
-                                          boolean ownBgmPriority) {
+                                          boolean ownBgmPriority,
+                                          float routeBlack, float routeWhite, float routeRed,
+                                          String forcedRoute) {
         // 客户端也留一行日志：排查「点了保存没生效」时，先看日志里有没有这一行，
         // 就能分清到底是「按钮没点到」还是「包没到服务端」。
-        HatMod.LOGGER.info("[HatMod] 发出调参请求：{} 蓄力 {}t，照射 {}t，固定伤害 {}，附加 {}，下限 {}，类型 {}，自己的BGM优先 {}",
+        HatMod.LOGGER.info("[HatMod] 发出调参请求：{} 蓄力 {}t，照射 {}t，固定伤害 {}，附加 {}，下限 {}，类型 {}，"
+                        + "自己的BGM优先 {}；路线帧伤 黑{} 白{} 红{}，强制路线 {}",
                 type.id(), chargeTicks, flashTicks, damagePerTick, healthDamageRatio, healthDamageFloor, damageType,
-                ownBgmPriority);
+                ownBgmPriority, routeBlack, routeWhite, routeRed, forcedRoute);
         CHANNEL.sendToServer(new SettingsUpdateMessage(type, chargeTicks, flashTicks,
                 damagePerTick, healthDamageRatio, healthDamageFloor, damageType,
-                ownBgmPriority));
+                ownBgmPriority, routeBlack, routeWhite, routeRed, forcedRoute));
+    }
+
+    /** 「全」路线相关的只读快照：三条帧伤 + 强制路线。 */
+    private static RouteSnapshot routeSnapshot() {
+        return new RouteSnapshot(HatSettings.routeDamage(HatType.BLACK), HatSettings.routeDamage(HatType.WHITE),
+                HatSettings.routeDamage(HatType.RED), HatSettings.forcedRoute());
+    }
+
+    /** 「全」三条路线帧伤 + 强制路线的只读快照。 */
+    public record RouteSnapshot(float black, float white, float red, String forcedRoute) {
     }
 
     private static List<SettingsSyncMessage.Snapshot> snapshot() {
@@ -231,7 +253,8 @@ public final class HatNetwork {
         }
     }
 
-    public record SettingsSyncMessage(List<Snapshot> snapshots, boolean ownBgmPriority, int feedback) {
+    public record SettingsSyncMessage(List<Snapshot> snapshots, boolean ownBgmPriority,
+                                      RouteSnapshot route, int feedback) {
 
         /** 一顶帽子的参数快照；ordinal 对应 {@link HatType} 的序号。 */
         public record Snapshot(int ordinal, int chargeTicks, int flashTicks, float damagePerTick,
@@ -241,6 +264,10 @@ public final class HatNetwork {
         public static void encode(SettingsSyncMessage msg, FriendlyByteBuf buf) {
             buf.writeVarInt(msg.feedback());
             buf.writeBoolean(msg.ownBgmPriority());
+            buf.writeFloat(msg.route().black());
+            buf.writeFloat(msg.route().white());
+            buf.writeFloat(msg.route().red());
+            buf.writeUtf(msg.route().forcedRoute());
             buf.writeVarInt(msg.snapshots().size());
             for (Snapshot snapshot : msg.snapshots()) {
                 buf.writeVarInt(snapshot.ordinal());
@@ -256,6 +283,7 @@ public final class HatNetwork {
         public static SettingsSyncMessage decode(FriendlyByteBuf buf) {
             int feedback = buf.readVarInt();
             boolean ownBgmPriority = buf.readBoolean();
+            RouteSnapshot route = new RouteSnapshot(buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf());
             int size = buf.readVarInt();
             List<Snapshot> list = new ArrayList<>(size);
             HatType[] types = HatType.values();
@@ -266,7 +294,7 @@ public final class HatNetwork {
                         buf.readVarInt(), buf.readVarInt(), buf.readFloat(), buf.readFloat(),
                         buf.readFloat(), buf.readUtf()));
             }
-            return new SettingsSyncMessage(list, ownBgmPriority, feedback);
+            return new SettingsSyncMessage(list, ownBgmPriority, route, feedback);
         }
 
         public static void handle(SettingsSyncMessage msg, Supplier<NetworkEvent.Context> ctx) {
@@ -279,7 +307,9 @@ public final class HatNetwork {
     public record SettingsUpdateMessage(HatType type, int chargeTicks, int flashTicks,
                                         float damagePerTick, float healthDamageRatio,
                                         float healthDamageFloor, String damageType,
-                                        boolean ownBgmPriority) {
+                                        boolean ownBgmPriority,
+                                        float routeBlack, float routeWhite, float routeRed,
+                                        String forcedRoute) {
 
         public static void encode(SettingsUpdateMessage msg, FriendlyByteBuf buf) {
             buf.writeVarInt(msg.type().ordinal());
@@ -290,6 +320,10 @@ public final class HatNetwork {
             buf.writeFloat(msg.healthDamageFloor());
             buf.writeUtf(msg.damageType());
             buf.writeBoolean(msg.ownBgmPriority());
+            buf.writeFloat(msg.routeBlack());
+            buf.writeFloat(msg.routeWhite());
+            buf.writeFloat(msg.routeRed());
+            buf.writeUtf(msg.forcedRoute());
         }
 
         public static SettingsUpdateMessage decode(FriendlyByteBuf buf) {
@@ -298,7 +332,7 @@ public final class HatNetwork {
             HatType type = types[ordinal >= 0 && ordinal < types.length ? ordinal : 0];
             return new SettingsUpdateMessage(type, buf.readVarInt(), buf.readVarInt(),
                     buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf(),
-                    buf.readBoolean());
+                    buf.readBoolean(), buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf());
         }
 
         public static void handle(SettingsUpdateMessage msg, Supplier<NetworkEvent.Context> ctx) {
@@ -320,11 +354,17 @@ public final class HatNetwork {
                         msg.damagePerTick(), msg.healthDamageRatio(), msg.healthDamageFloor(), msg.damageType());
                 // 全局开关跟着一起落盘：这样「保存」一个按钮就把界面上看到的都生效了
                 HatSettings.setOwnBgmPriority(msg.ownBgmPriority());
-                HatMod.LOGGER.info("[HatMod] {} 参数已更新：蓄力 {}t，照射 {}t，固定伤害 {}，附加 {}，下限 {}，类型 {}；自己的BGM优先 {}",
+                // 「全」的三条路线帧伤 + 强制路线，也在同一个「保存」里生效
+                HatSettings.setRouteDamage(msg.routeBlack(), msg.routeWhite(), msg.routeRed());
+                HatSettings.setForcedRoute(msg.forcedRoute());
+                HatMod.LOGGER.info("[HatMod] {} 参数已更新：蓄力 {}t，照射 {}t，固定伤害 {}，附加 {}，下限 {}，类型 {}；"
+                                + "自己的BGM优先 {}；路线帧伤 黑{} 白{} 红{}，强制路线 {}",
                         msg.type().id(), HatSettings.chargeTicks(msg.type()), HatSettings.flashTicks(msg.type()),
                         HatSettings.damagePerTick(msg.type()), HatSettings.healthDamageRatio(msg.type()),
                         HatSettings.healthDamageFloor(msg.type()), HatSettings.damageTypeId(msg.type()),
-                        HatSettings.ownBgmPriority());
+                        HatSettings.ownBgmPriority(), HatSettings.routeDamage(HatType.BLACK),
+                        HatSettings.routeDamage(HatType.WHITE), HatSettings.routeDamage(HatType.RED),
+                        HatSettings.forcedRoute());
                 broadcastSettings(player.getServer());
                 sendSettings(player, FEEDBACK_OK);
             });

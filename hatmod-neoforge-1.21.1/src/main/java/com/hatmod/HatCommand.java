@@ -24,9 +24,11 @@ import net.neoforged.neoforge.event.RegisterCommandsEvent;
  * 所以哪怕自定义网络包在这个整合包里失灵，参数照样改得动、也验证得了。
  *
  * <pre>
- *   /hatmod                                       列出三顶帽子当前的参数
+ *   /hatmod                                       列出四顶帽子当前的参数（含「全」的路线）
  *   /hatmod tune &lt;hat&gt; &lt;蓄力&gt; &lt;照射&gt; &lt;固定伤害&gt; &lt;附加%&gt; &lt;下限%&gt; [伤害类型]
  *   /hatmod reset &lt;hat&gt;                           恢复出厂值
+ *   /hatmod route [random|black|white|red]        查看 / 设置「全」的强制路线（不带参数=查看）
+ *   /hatmod routedamage &lt;黑&gt; &lt;白&gt; &lt;红&gt;            设置「全」三条路线的帧伤
  *   /hatmod reload                                丢掉内存里那份，重新读 config/hatmod.json
  * </pre>
  *
@@ -41,6 +43,15 @@ public final class HatCommand {
         builder.suggest("white");
         builder.suggest("red");
         builder.suggest("all");
+        return builder.buildFuture();
+    };
+
+    /** 路线建议：随机 + 三顶原色帽。 */
+    private static final SuggestionProvider<CommandSourceStack> ROUTE_SUGGESTIONS = (context, builder) -> {
+        builder.suggest(HatSettings.ROUTE_RANDOM);
+        builder.suggest("black");
+        builder.suggest("white");
+        builder.suggest("red");
         return builder.buildFuture();
     };
 
@@ -59,6 +70,20 @@ public final class HatCommand {
                         .then(Commands.argument("hat", StringArgumentType.word())
                                 .suggests(HAT_SUGGESTIONS)
                                 .executes(HatCommand::reset)))
+                .then(Commands.literal("route")
+                        .executes(HatCommand::showRoute)
+                        .then(Commands.argument("route", StringArgumentType.word())
+                                .suggests(ROUTE_SUGGESTIONS)
+                                .executes(HatCommand::setRoute)))
+                .then(Commands.literal("routedamage")
+                        .executes(HatCommand::showRouteDamage)
+                        .then(Commands.argument("black",
+                                        FloatArgumentType.floatArg(HatSettings.MIN_DAMAGE, HatSettings.MAX_DAMAGE))
+                                .then(Commands.argument("white",
+                                                FloatArgumentType.floatArg(HatSettings.MIN_DAMAGE, HatSettings.MAX_DAMAGE))
+                                        .then(Commands.argument("red",
+                                                        FloatArgumentType.floatArg(HatSettings.MIN_DAMAGE, HatSettings.MAX_DAMAGE))
+                                                .executes(HatCommand::setRouteDamage)))))
                 .then(tuneBranch()));
     }
 
@@ -103,7 +128,52 @@ public final class HatCommand {
                     trim(entry.damagePerTick), trim(entry.healthDamageRatio),
                     trim(entry.healthDamageFloor), entry.damageType)), false);
         }
+        source.sendSuccess(() -> Component.literal(String.format(
+                "[HatMod] 「全」路线帧伤：黑 %s / 白 %s / 红 %s；强制路线 %s",
+                trim(HatSettings.routeDamage(HatType.BLACK)), trim(HatSettings.routeDamage(HatType.WHITE)),
+                trim(HatSettings.routeDamage(HatType.RED)), HatSettings.forcedRoute())), false);
         return HatType.values().length;
+    }
+
+    /** {@code /hatmod route}：只看当前强制路线。 */
+    private static int showRoute(CommandContext<CommandSourceStack> context) {
+        context.getSource().sendSuccess(() -> Component.literal(
+                "[HatMod] 「全」当前强制路线：" + HatSettings.forcedRoute()
+                        + "（random = 正常随机；black / white / red = 每轮都走那一条）"), false);
+        return 1;
+    }
+
+    /** {@code /hatmod route <random|black|white|red>}：设强制路线。 */
+    private static int setRoute(CommandContext<CommandSourceStack> context) {
+        String raw = StringArgumentType.getString(context, "route");
+        HatSettings.setForcedRoute(raw);
+        HatNetwork.broadcastSettings();
+        context.getSource().sendSuccess(() -> Component.literal(
+                "[HatMod] 「全」强制路线已设为：" + HatSettings.forcedRoute()), true);
+        return 1;
+    }
+
+    /** {@code /hatmod routedamage}：只看当前三条路线帧伤。 */
+    private static int showRouteDamage(CommandContext<CommandSourceStack> context) {
+        context.getSource().sendSuccess(() -> Component.literal(String.format(
+                "[HatMod] 「全」路线帧伤：黑 %s / 白 %s / 红 %s",
+                trim(HatSettings.routeDamage(HatType.BLACK)), trim(HatSettings.routeDamage(HatType.WHITE)),
+                trim(HatSettings.routeDamage(HatType.RED)))), false);
+        return 1;
+    }
+
+    /** {@code /hatmod routedamage <黑> <白> <红>}：设三条路线帧伤。 */
+    private static int setRouteDamage(CommandContext<CommandSourceStack> context) {
+        HatSettings.setRouteDamage(
+                FloatArgumentType.getFloat(context, "black"),
+                FloatArgumentType.getFloat(context, "white"),
+                FloatArgumentType.getFloat(context, "red"));
+        HatNetwork.broadcastSettings();
+        context.getSource().sendSuccess(() -> Component.literal(String.format(
+                "[HatMod] 「全」路线帧伤已更新：黑 %s / 白 %s / 红 %s",
+                trim(HatSettings.routeDamage(HatType.BLACK)), trim(HatSettings.routeDamage(HatType.WHITE)),
+                trim(HatSettings.routeDamage(HatType.RED)))), true);
+        return 1;
     }
 
     private static int reset(CommandContext<CommandSourceStack> context) {
