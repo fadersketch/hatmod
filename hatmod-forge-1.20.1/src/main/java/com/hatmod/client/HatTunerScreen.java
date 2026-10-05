@@ -17,6 +17,9 @@ import net.minecraft.network.chat.Component;
  * 每刻固定伤害、附加百分比、百分比下限、伤害类型 id。点「保存」把当前这顶帽子的
  * 六个值发给服务端（服务端夹范围、写 {@code config/hatmod.json}、再广播回所有人）。
  *
+ * <p>选中「全」时前三个框改成三条路线的帧伤，后三个仍是它自己那份配置，
+ * 中间那行还会多出一个「强制路线」按钮。
+ *
  * <p>界面上的当前值来自 {@link ClientHatSettings}（服务端同步过来的副本），
  * 找不到时按出厂值显示。「恢复默认」只是把框里填回 {@code HatType} 的出厂值，
  * 要点「保存」才真的生效。
@@ -46,10 +49,24 @@ public class HatTunerScreen extends Screen {
             "hatmod.tuner.route.red",
     };
 
-    private static final int ROW_H = 24;
-    private static final int FIELD_H = 18;
+    /*
+     * 垂直排版按「最坏情况 320×240」来定：自动 GUI 缩放只保证这么大。
+     * 之前把底部三个按钮、中间那行说明和「强制路线」都往下堆，矮窗口里必然叠在一起
+     * （说明甚至压到按钮上面）。现在每一块都占死一条自己的带子：
+     *   标题 / 帽子按钮 / 「强制路线」/ 六行输入框 / 状态行 / 底部按钮，从上到下依次排开，
+     * 行距按屏幕高度摊，底部按钮永远排在状态行之下、绝不出屏。
+     */
+    private static final int TITLE_Y = 8;
+    private static final int HAT_ROW_Y = 30;
+    private static final int FORCED_ROW_Y = 52;
+    private static final int ROWS_TOP = 74;
+    /** 状态行留给底部按钮的空档（按钮上沿与六行末行之间的净距）。 */
+    private static final int STATUS_GAP = 11;
+    private static final int ROW_H_MIN = 18;
+    private static final int ROW_H_MAX = 26;
+    private static final int FIELD_H = 16;
     private static final int FIELD_W = 200;
-    private static final int FIRST_ROW_Y = 64;
+    private static final int BUTTON_H = 20;
 
     private final EditBox[] fields = new EditBox[FIELD_KEYS.length];
     private final Button[] hatButtons = new Button[HatType.values().length];
@@ -69,23 +86,55 @@ public class HatTunerScreen extends Screen {
         super(Component.translatable("hatmod.tuner.title"));
     }
 
+    /** 左侧标签的可用起点。窄窗口往里收，免得标签被切在屏幕外。 */
     private int left() {
-        return this.width / 2 - 170;
+        return Math.max(6, this.width / 2 - 170);
+    }
+
+    /** 输入框左边缘：保持旧版「屏幕中线 -40」的位置，宽窗口下跟以前一模一样。 */
+    private int fieldX() {
+        return this.width / 2 - 40;
+    }
+
+    private int fieldW() {
+        return Math.max(80, Math.min(FIELD_W, this.width - fieldX() - 8));
     }
 
     /**
-     * 底部三个按钮那一行的 y。
+     * 六行输入框的行距：按屏幕高度摊。
      *
-     * <p>界面高度不够时往上收：自动 GUI 缩放最小只保证 320×240，按固定值排的话
-     * 按钮会贴着屏幕下边缘（甚至被裁掉），点起来很别扭。
+     * <p>先把状态行和底部按钮的位置预留出来，剩下的高度除以六。矮窗口（240）压到 21 上下，
+     * 高窗口最多散到 26。这样底部那排按钮永远有位置，不会再和「强制路线」或说明文字叠在一起。
      */
+    private int rowH() {
+        int avail = (this.height - 28) - STATUS_GAP - ROWS_TOP;
+        return Math.max(ROW_H_MIN, Math.min(ROW_H_MAX, avail / FIELD_KEYS.length));
+    }
+
+    private int rowY(int index) {
+        return ROWS_TOP + index * rowH();
+    }
+
     private int bottomY() {
-        return Math.min(FIRST_ROW_Y + FIELD_KEYS.length * ROW_H + 12, this.height - 28);
+        return Math.min(ROWS_TOP + FIELD_KEYS.length * rowH() + 10, this.height - 28);
+    }
+
+    /**
+     * 状态行的 y：永远排在六行输入框之下，同时尽量贴着底部按钮。
+     *
+     * <p>取二者的大值，万一窗口比 320×240 还矮（正常 GUI 缩放不会），也不会反过来压到
+     * 最后一行输入框上。
+     */
+    private int statusY() {
+        int belowRows = ROWS_TOP + (FIELD_KEYS.length - 1) * rowH() + FIELD_H + 2;
+        return Math.max(belowRows, bottomY() - STATUS_GAP);
     }
 
     @Override
     protected void init() {
         int left = left();
+        int fieldX = fieldX();
+        int fieldW = fieldW();
 
         // 帽子切换：按钮总宽按屏宽收着排，保证四顶帽子在最小 GUI 缩放（320 宽）下也放得下
         HatType[] types = HatType.values();
@@ -98,14 +147,14 @@ public class HatTunerScreen extends Screen {
             hatButtons[i] = Button.builder(
                             Component.translatable("hatmod.tuner.hat." + type.id()),
                             button -> select(type))
-                    .bounds(startX + i * (buttonW + gap), 36, buttonW, 20)
+                    .bounds(startX + i * (buttonW + gap), HAT_ROW_Y, buttonW, BUTTON_H)
                     .build();
             addRenderableWidget(hatButtons[i]);
         }
 
         // 六个输入框
         for (int i = 0; i < FIELD_KEYS.length; i++) {
-            EditBox box = new EditBox(this.font, left + 130, FIRST_ROW_Y + i * ROW_H, FIELD_W, FIELD_H,
+            EditBox box = new EditBox(this.font, fieldX, rowY(i), fieldW, FIELD_H,
                     Component.translatable(FIELD_KEYS[i]));
             box.setMaxLength(64);
             fields[i] = addRenderableWidget(box);
@@ -114,28 +163,27 @@ public class HatTunerScreen extends Screen {
         // 底部按钮
         int bottom = bottomY();
         addRenderableWidget(Button.builder(Component.translatable("hatmod.tuner.save"), button -> save())
-                .bounds(this.width / 2 - 156, bottom, 100, 20).build());
+                .bounds(this.width / 2 - 156, bottom, 100, BUTTON_H).build());
         addRenderableWidget(Button.builder(Component.translatable("hatmod.tuner.reset"), button -> resetFields())
-                .bounds(this.width / 2 - 50, bottom, 100, 20).build());
+                .bounds(this.width / 2 - 50, bottom, 100, BUTTON_H).build());
         addRenderableWidget(Button.builder(Component.translatable("gui.done"), button -> onClose())
-                .bounds(this.width / 2 + 56, bottom, 100, 20).build());
+                .bounds(this.width / 2 + 56, bottom, 100, BUTTON_H).build());
 
-        // 全局开关「自己的 BGM 优先」：放在右上角，不动原来的排版
+        // 全局开关「自己的 BGM 优先」：放在右上角，和标题同一行，不占用中间排版
         this.ownBgmPriority = ClientHatSettings.ownBgmPriority();
         this.ownBgmButton = Button.builder(ownBgmLabel(), button -> {
             this.ownBgmPriority = !this.ownBgmPriority;
             button.setMessage(ownBgmLabel());
-        }).bounds(this.width - 118, 10, 108, 20).build();
+        }).bounds(this.width - 118, TITLE_Y, 108, BUTTON_H).build();
         addRenderableWidget(this.ownBgmButton);
 
-        // 「全」页专用：强制路线循环按钮（随机 → 黑 → 白 → 红）。只在选中「全」时可见。
-        // y 夹一下，保证最小 GUI 缩放（320×240）下也不会掉出屏幕外。
+        // 「全」页专用：强制路线循环按钮（随机 → 黑 → 白 → 红）。只在选中「全」时可见；
+        // 它占的那一行永远留着，所以切帽子时上下六行不会跳。
         this.forcedRoute = ClientHatSettings.forcedRoute();
-        int routeY = Math.min(bottomY() + 22, Math.max(0, this.height - 22));
         this.forcedRouteButton = Button.builder(forcedRouteLabel(), button -> {
             this.forcedRoute = nextForcedRoute(this.forcedRoute);
             button.setMessage(forcedRouteLabel());
-        }).bounds(this.width / 2 - 90, routeY, 180, 20).build();
+        }).bounds(this.width / 2 - 90, FORCED_ROW_Y, 180, BUTTON_H).build();
         addRenderableWidget(this.forcedRouteButton);
 
         fillFromSelection();
@@ -194,10 +242,6 @@ public class HatTunerScreen extends Screen {
         fields[3].setValue(format(snapshot.healthDamageRatio));
         fields[4].setValue(format(snapshot.healthDamageFloor));
         fields[5].setValue(snapshot.damageType);
-
-        // 蓄力/照射两个框在「全」页不适用（路线驱动），禁掉免得以为填了会生效
-        fields[0].setEditable(this.selected != HatType.ALL);
-        fields[1].setEditable(this.selected != HatType.ALL);
 
         if (this.forcedRouteButton != null) {
             this.forcedRoute = ClientHatSettings.forcedRoute();
@@ -365,28 +409,25 @@ public class HatTunerScreen extends Screen {
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         super.render(graphics, mouseX, mouseY, partialTick);
 
-        graphics.drawCenteredString(this.font, this.title, this.width / 2, 14, 0xFFFFFF);
+        graphics.drawCenteredString(this.font, this.title, this.width / 2, TITLE_Y, 0xFFFFFF);
 
         int labelX = left() + 4;
         boolean all = this.selected == HatType.ALL;
         for (int i = 0; i < FIELD_KEYS.length; i++) {
             // 「全」页：前三个框的标签换成黑/白/红三条路线的帧伤
             String key = all && i < ALL_ROUTE_KEYS.length ? ALL_ROUTE_KEYS[i] : FIELD_KEYS[i];
-            int y = FIRST_ROW_Y + i * ROW_H + (FIELD_H - this.font.lineHeight) / 2 + 1;
+            int y = rowY(i) + (FIELD_H - this.font.lineHeight) / 2 + 1;
             graphics.drawString(this.font, Component.translatable(key), labelX, y, 0xA0A0A0);
         }
 
-        // 把界面上正在编辑的帽子写在按钮那排右边，省得看按钮置灰猜
-        Component editing = Component.translatable("hatmod.tuner.editing",
-                Component.translatable("hatmod.tuner.hat." + this.selected.id()));
-        graphics.drawCenteredString(this.font, editing, this.width / 2, bottomY() - 12, 0x808080);
-
-        // 「全」页的说明：蓄力/照射由路线决定（框已禁用），前三个框是三条路线的帧伤
-        if (all) {
-            int noteY = Math.min(bottomY() + 46, Math.max(0, this.height - 10));
-            graphics.drawCenteredString(this.font, Component.translatable("hatmod.tuner.allRouteNote"),
-                    this.width / 2, noteY, 0xB06060);
-        }
+        // 底部按钮上方那一行：平时写正在编辑哪顶，选中「全」时换成它自己那句说明
+        // （前三个框的含义 + 蓄力/照射为什么不在这一页调）。只占一行，不会顶到按钮。
+        Component status = all
+                ? Component.translatable("hatmod.tuner.allRouteNote")
+                : Component.translatable("hatmod.tuner.editing",
+                        Component.translatable("hatmod.tuner.hat." + this.selected.id()));
+        graphics.drawCenteredString(this.font, status, this.width / 2, statusY(),
+                all ? 0xB06060 : 0x808080);
     }
 
     @Override

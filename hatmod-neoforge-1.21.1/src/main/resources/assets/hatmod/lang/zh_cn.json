@@ -54,7 +54,7 @@
   "enchantment.hatmod.dominion": "掌控",
   "enchantment.hatmod.dominion.desc": "每级 +5 秒：蓄力到第 15 秒时，让最近的 5 个敌人失去索敌目标（每级 +5 人，最多 15 人），并被光灵标记；被控住的生物身边还有别的敌人时，会掉转枪口去打它们。对监守者同样生效：它的目标存在脑记忆里，会被连怒气一起抹掉。",
   "item.hatmod.all_hat.tagline": "新神已至",
-  "hatmod.tuner.allRouteNote": "「全」的蓄力/照射由本轮路线决定（框已禁用，不可改）。前三个框是黑/白/红三条路线的帧伤；强制路线可锁定某一条，方便逐条核对时长、BGM 与帽子颜色",
+  "hatmod.tuner.allRouteNote": "「全」前三框=黑/白/红路线帧伤；蓄力/照射随路线走",
   "hatmod.tuner.route.black": "黑路线帧伤",
   "hatmod.tuner.route.white": "白路线帧伤",
   "hatmod.tuner.route.red": "红路线帧伤",

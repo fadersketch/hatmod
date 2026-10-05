@@ -930,7 +930,7 @@ N N N
 gradle build
 ```
 
-产物：`build/libs/hatmod-forge-1.20.1-1.0.2.jar`，放进 `.minecraft/mods/`。
+产物：`build/libs/hatmod-forge-1.20.1-1.0.3.jar`，放进 `.minecraft/mods/`。
 
 > `libs/curios-forge-5.14.1+1.20.1-api.jar` 是**编译期**用的 Curios API（`compileOnly`，
 > 不会打进成品）。放在仓库里是为了离线也能编译，不需要去连 Curios 的 maven。

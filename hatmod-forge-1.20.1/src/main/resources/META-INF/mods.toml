@@ -5,7 +5,7 @@ issueTrackerURL="https://example.com/issues"
 
 [[mods]]
 modId="hatmod"
-version="1.0.2"
+version="1.0.3"
 displayName="神之牛仔帽"
 logoFile="hatmod_logo.png"
 authors="HatMod"

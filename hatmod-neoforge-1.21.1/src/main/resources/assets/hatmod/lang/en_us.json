@@ -54,7 +54,7 @@
   "enchantment.hatmod.dominion": "Dominion",
   "enchantment.hatmod.dominion.desc": "+5s per level: at charge second 15, the 5 nearest enemies lose their target (+5 per level, up to 15) and are outlined. A dominated mob that still has other enemies nearby is turned on them instead. Works on Wardens too: their target lives in brain memory, so it is wiped together with their anger.",
   "item.hatmod.all_hat.tagline": "The New God Has Arrived",
-  "hatmod.tuner.allRouteNote": "The All hat's charge/beam are decided by this cycle's route (those boxes are disabled). The first three boxes are the per-tick damage for the black/white/red routes; force a route to check each one's timing, BGM and hat colour in turn",
+  "hatmod.tuner.allRouteNote": "ALL: 3 route dmgs; charge/beam follow route",
   "hatmod.tuner.route.black": "Black route dmg",
   "hatmod.tuner.route.white": "White route dmg",
   "hatmod.tuner.route.red": "Red route dmg",

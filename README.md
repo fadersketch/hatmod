@@ -22,9 +22,9 @@
 
 推荐从 **Releases** 下载：
 
-- **[最新版本（v1.0.2）](https://github.com/fadersketch/hatmod/releases/latest)**
-  - `hatmod-forge-1.20.1-1.0.2.jar` —— 给 **Minecraft 1.20.1 + Forge**
-  - `hatmod-neoforge-1.21.1-1.0.2.jar` —— 给 **Minecraft 1.21.1 + NeoForge**
+- **[最新版本（v1.0.3）](https://github.com/fadersketch/hatmod/releases/latest)**
+  - `hatmod-forge-1.20.1-1.0.3.jar` —— 给 **Minecraft 1.20.1 + Forge**
+  - `hatmod-neoforge-1.21.1-1.0.3.jar` —— 给 **Minecraft 1.21.1 + NeoForge**
 
 把对应版本的那一个丢进 `.minecraft/mods/` 即可（**只装一个**，装错版本会崩）。
 本模组**不需要任何前置模组**。仓库根目录里也放了同样两个 jar，方便直接取用。
@@ -269,8 +269,8 @@ gradle build
 ```
 hatmod-forge-1.20.1/                 Forge 1.20.1 源码（含完整设计文档 README.md）
 hatmod-neoforge-1.21.1/              NeoForge 1.21.1 源码（含完整设计文档 README.md）
-hatmod-forge-1.20.1-1.0.2.jar        成品，给 1.20.1 Forge
-hatmod-neoforge-1.21.1-1.0.2.jar     成品，给 1.21.1 NeoForge
+hatmod-forge-1.20.1-1.0.3.jar        成品，给 1.20.1 Forge
+hatmod-neoforge-1.21.1-1.0.3.jar     成品，给 1.21.1 NeoForge
 ```
 
 想改数值 / 看实现细节，进对应子树目录读它的 `README.md`。

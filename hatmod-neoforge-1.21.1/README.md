@@ -882,7 +882,7 @@ mod jar 的文件系统句柄。之后**第一次**用到某个类时，类加�
 gradle build
 ```
 
-产物：`build/libs/hatmod-neoforge-1.21.1-1.0.2.jar`，放进 `.minecraft/mods/`。
+产物：`build/libs/hatmod-neoforge-1.21.1-1.0.3.jar`，放进 `.minecraft/mods/`。
 （NeoForge 版本不需要额外前置模组。）
 
 > `libs/curios-neoforge-9.5.1+1.21.1-api.jar` 是**编译期**用的 Curios API（`compileOnly`，
