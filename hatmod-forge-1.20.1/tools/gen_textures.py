@@ -101,6 +101,30 @@ def build_item_icon(palette):
     return rows
 
 
+def build_all_item_icon():
+    """「全」的物品图标：黑帽冠 + 红帽带 + 白帽檐 —— 一顶就能看出是三顶合一的。
+
+    形状完全复用 {@link #build_item_icon}（同一个像素布局，只是分区域换色），
+    所以四顶帽子在物品栏里长得一样、只差配色。
+    """
+    icon = build_item_icon(PALETTES["black_hat"])
+    white_base, white_shade, white_light, white_band = (PALETTES["white_hat"][k]
+                                                        for k in ("base", "shade", "light", "band"))
+    red_base, red_shade, red_light, red_band = (PALETTES["red_hat"][k]
+                                                for k in ("base", "shade", "light", "band"))
+
+    # 帽带（y=8..9）换成红色
+    rect(icon, 5, 8, 10, 9, red_base)
+    rect(icon, 10, 8, 10, 9, red_shade)
+    # 帽檐（y=10..12）换成白色
+    rect(icon, 1, 10, 14, 11, white_shade)
+    rect(icon, 2, 10, 13, 10, white_base)
+    rect(icon, 1, 12, 14, 12, white_shade)
+    icon[9][1] = white_band
+    icon[9][14] = white_band
+    return icon
+
+
 # ----------------------------------------------------------------------
 # 128x64 自定义牛仔帽模型贴图
 #
@@ -135,6 +159,24 @@ def build_model_texture(palette):
     rect(rows, BRIM_U, BRIM_V, BRIM_U + foot_w - 1, BRIM_V + BRIM_D + BRIM_H - 1, shade)
     rect(rows, BRIM_U + BRIM_D, BRIM_V, BRIM_U + BRIM_D + 2 * BRIM_W - 1, BRIM_V + BRIM_D - 1, base)
     rect(rows, BRIM_U, BRIM_V + BRIM_D, BRIM_U + foot_w - 1, BRIM_V + BRIM_D, band)
+    return rows
+
+
+def build_all_model_texture():
+    """「全」的护甲贴图：黑帽冠 + 红帽带 + 白帽檐（戴在头上的样子和物品图标一致）。"""
+    rows = build_model_texture(PALETTES["black_hat"])
+    white_base, white_shade, white_light, white_band = (PALETTES["white_hat"][k]
+                                                        for k in ("base", "shade", "light", "band"))
+    red_base, red_shade, red_light, red_band = (PALETTES["red_hat"][k]
+                                                for k in ("base", "shade", "light", "band"))
+
+    # 帽带（y=11）换红
+    rect(rows, 0, 11, 27, 11, red_band)
+    # 帽檐整块换白
+    foot_w = 2 * BRIM_D + 2 * BRIM_W
+    rect(rows, BRIM_U, BRIM_V, BRIM_U + foot_w - 1, BRIM_V + BRIM_D + BRIM_H - 1, white_shade)
+    rect(rows, BRIM_U + BRIM_D, BRIM_V, BRIM_U + BRIM_D + 2 * BRIM_W - 1, BRIM_V + BRIM_D - 1, white_base)
+    rect(rows, BRIM_U, BRIM_V + BRIM_D, BRIM_U + foot_w - 1, BRIM_V + BRIM_D, white_band)
     return rows
 
 
@@ -321,6 +363,13 @@ def main():
         write_png(os.path.join(ROOT, "models", "armor", f"{name}_layer_1.png"),
                   128, 64, build_model_texture(palette))
         preview(icon, f"{name}.png")
+
+    # 「全」：黑冠 + 红带 + 白檐，形状复用上面那一套，只换配色
+    all_icon = build_all_item_icon()
+    write_png(os.path.join(ROOT, "item", "all_hat.png"), 16, 16, all_icon)
+    write_png(os.path.join(ROOT, "models", "armor", "all_hat_layer_1.png"),
+              128, 64, build_all_model_texture())
+    preview(all_icon, "all_hat.png")
 
     write_png(os.path.join(ROOT, "particle", "flash_light.png"), 16, 16, build_particle())
     write_png(os.path.join(ROOT, "particle", "beam.png"), 32, 32, build_beam())

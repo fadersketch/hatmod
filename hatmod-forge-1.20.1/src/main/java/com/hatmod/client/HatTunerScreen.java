@@ -74,17 +74,18 @@ public class HatTunerScreen extends Screen {
     protected void init() {
         int left = left();
 
-        // 帽子切换
+        // 帽子切换：按钮总宽按屏宽收着排，保证四顶帽子在最小 GUI 缩放（320 宽）下也放得下
         HatType[] types = HatType.values();
-        int buttonW = 100;
-        int totalW = buttonW * types.length + 4 * (types.length - 1);
+        int gap = 4;
+        int buttonW = Math.min(100, (Math.min(this.width, 360) - gap * (types.length - 1)) / types.length);
+        int totalW = buttonW * types.length + gap * (types.length - 1);
         int startX = this.width / 2 - totalW / 2;
         for (int i = 0; i < types.length; i++) {
             HatType type = types[i];
             hatButtons[i] = Button.builder(
                             Component.translatable("hatmod.tuner.hat." + type.id()),
                             button -> select(type))
-                    .bounds(startX + i * (buttonW + 4), 36, buttonW, 20)
+                    .bounds(startX + i * (buttonW + gap), 36, buttonW, 20)
                     .build();
             addRenderableWidget(hatButtons[i]);
         }
@@ -263,6 +264,12 @@ public class HatTunerScreen extends Screen {
         Component editing = Component.translatable("hatmod.tuner.editing",
                 Component.translatable("hatmod.tuner.hat." + this.selected.id()));
         graphics.drawCenteredString(this.font, editing, this.width / 2, bottomY() - 12, 0x808080);
+
+        // 「全」的数值是路线驱动的：下面这几个框填了也不生效，写一行说明免得白改
+        if (this.selected == HatType.ALL) {
+            graphics.drawCenteredString(this.font, Component.translatable("hatmod.tuner.allRouteNote"),
+                    this.width / 2, bottomY() + 24, 0xB06060);
+        }
     }
 
     @Override

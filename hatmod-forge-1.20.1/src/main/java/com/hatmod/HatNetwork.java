@@ -15,7 +15,7 @@ import java.util.List;
 import java.util.function.Supplier;
 
 /**
- * 模组的网络包，一共六种：
+ * 模组的网络包，一共七种：
  *
  * <ul>
  *   <li>{@code BeamTargetMessage}（S2C）：光柱锁的是哪个敌人。</li>
@@ -26,6 +26,8 @@ import java.util.function.Supplier;
  *   <li>{@code ForesightMessage}（S2C）：黑帽「预知」发动，开始一段「整段持续黑白渲染」的画面。</li>
  *   <li>{@code GreenHeartsMessage}（S2C）：某个玩家当前有多少「绿心」，
  *       客户端的 HUD 拿它画血条上方那一排绿心。</li>
+ *   <li>{@code RouteMessage}（S2C）：「全」这一轮走的是哪条路线（黑/白/红），
+ *       客户端据此把帽子渲染成那个颜色。</li>
  * </ul>
  */
 public final class HatNetwork {
@@ -57,6 +59,8 @@ public final class HatNetwork {
                 ForesightMessage::encode, ForesightMessage::decode, ForesightMessage::handle);
         CHANNEL.registerMessage(5, GreenHeartsMessage.class,
                 GreenHeartsMessage::encode, GreenHeartsMessage::decode, GreenHeartsMessage::handle);
+        CHANNEL.registerMessage(6, RouteMessage.class,
+                RouteMessage::encode, RouteMessage::decode, RouteMessage::handle);
     }
 
     /** 通知客户端某个戴帽者「开始/停止照射」，以及它锁定了谁（每道光柱一个 id）。 */
@@ -140,6 +144,55 @@ public final class HatNetwork {
     }
 
     // ------------------------------------------------------------------
+
+    /**
+     * 通知客户端：戴帽者 {@code wearer} 这一轮走的是哪条路线（{@code route}）。
+     *
+     * <p>只有「全」有意义 —— 客户端据此把帽子渲染成路线对应的颜色（黑/白/红）。
+     * 三顶原色帽直接按自己的颜色渲染，这条包对它们只是同步一个「等于自身」的值。
+     */
+    public static void sendRoute(LivingEntity wearer, HatType hatType, HatType route) {
+        if (hatType == null || route == null) {
+            return;
+        }
+        CHANNEL.send(PacketDistributor.TRACKING_ENTITY_AND_SELF.with(() -> wearer),
+                new RouteMessage(wearer.getId(), route.ordinal()));
+    }
+
+    /**
+     * 只发给**某一个**玩家：戴帽者 {@code wearer} 这一轮走的是哪条路线。
+     *
+     * <p>给「这个玩家刚开始追踪那个戴帽者」用（{@code PlayerEvent.StartTracking}）：
+     * 路线包平时只在**循环开始**时广播，玩家如果在循环中途才走进视野，就收不到那一刻的包，
+     * 帽子的颜色会一直停在兜底的「全」三色贴图上 —— 这里补发一条，颜色立刻对上当前路线。
+     */
+    public static void sendRouteTo(ServerPlayer player, LivingEntity wearer, HatType route) {
+        if (player == null || wearer == null || route == null) {
+            return;
+        }
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new RouteMessage(wearer.getId(), route.ordinal()));
+    }
+
+    /** 一个戴帽者这一轮走哪条路线（「全」用；颜色跟着变）。 */
+    public record RouteMessage(int wearerId, int routeOrdinal) {
+
+        public static void encode(RouteMessage msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.wearerId());
+            buf.writeVarInt(msg.routeOrdinal());
+        }
+
+        public static RouteMessage decode(FriendlyByteBuf buf) {
+            return new RouteMessage(buf.readVarInt(), buf.readVarInt());
+        }
+
+        public static void handle(RouteMessage msg, Supplier<NetworkEvent.Context> ctx) {
+            NetworkEvent.Context context = ctx.get();
+            context.enqueueWork(() -> HatRouteState.setClient(
+                    msg.wearerId(), msg.routeOrdinal()));
+            context.setPacketHandled(true);
+        }
+    }
 
     /**
      * 一条光柱锁定信息：戴帽者、它锁定的目标 id 列表（每道光柱一个）、是否在照射。

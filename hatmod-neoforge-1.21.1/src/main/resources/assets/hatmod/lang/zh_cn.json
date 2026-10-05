@@ -2,6 +2,8 @@
   "item.hatmod.black_hat": "神之牛仔帽（黑）",
   "item.hatmod.white_hat": "神之牛仔帽（白）",
   "item.hatmod.red_hat": "神之牛仔帽（红）",
+  "item.hatmod.all_hat": "神之牛仔帽（全）",
+  "item.hatmod.all_hat.desc": "三顶合一 · 兼容全部专属附魔 · 自带光辉",
   "item.hatmod.hat.desc": "神本无相",
   "item.hatmod.hat.durability": "耐久 %s · 每 %s 秒最多磨损 1 点 · 1 个皮革修复 %s 点",
   "item.hatmod.tuner": "神的调参器",
@@ -16,6 +18,7 @@
   "hatmod.tuner.hat.black_hat": "黑帽",
   "hatmod.tuner.hat.white_hat": "白帽",
   "hatmod.tuner.hat.red_hat": "红帽",
+  "hatmod.tuner.hat.all_hat": "全帽",
   "hatmod.tuner.editing": "正在调整：%s",
   "hatmod.tuner.charge": "蓄力刻数",
   "hatmod.tuner.flash": "照射刻数",
@@ -49,5 +52,7 @@
   "enchantment.hatmod.conflagration": "光柱",
   "enchantment.hatmod.conflagration.desc": "照射时最多多发射 3 道光柱（每级 +1，I/II/III 级最多 2/3/4 道）。敌人够多就一人一道；敌人不够（比如单挑一个 Boss）时，多余的光柱会堆叠到最近的敌人身上，但同一目标上每多叠一道伤害就按边际递减打个折（第 2/3/4 道 = 40%/16%/6.4%），所以 4 道全堆一个人的合计约 1.62 倍，而不是 4 倍。",
   "enchantment.hatmod.dominion": "掌控",
-  "enchantment.hatmod.dominion.desc": "每级 +5 秒：蓄力到第 15 秒时，让最近的 5 个敌人失去索敌目标（每级 +5 人，最多 15 人），并被光灵标记；被控住的生物身边还有别的敌人时，会掉转枪口去打它们。对监守者同样生效：它的目标存在脑记忆里，会被连怒气一起抹掉。"
+  "enchantment.hatmod.dominion.desc": "每级 +5 秒：蓄力到第 15 秒时，让最近的 5 个敌人失去索敌目标（每级 +5 人，最多 15 人），并被光灵标记；被控住的生物身边还有别的敌人时，会掉转枪口去打它们。对监守者同样生效：它的目标存在脑记忆里，会被连怒气一起抹掉。",
+  "item.hatmod.all_hat.tagline": "新神已至",
+  "hatmod.tuner.allRouteNote": "「全」每轮随机取一条路线（黑/白/红），时长按那条路线走；帧伤固定黑 12 / 白 10 / 红 15，此处的数值不生效"
 }

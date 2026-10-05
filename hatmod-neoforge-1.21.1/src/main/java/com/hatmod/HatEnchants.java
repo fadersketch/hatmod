@@ -182,7 +182,7 @@ public final class HatEnchants {
      * 反序列化出来的，Holder 实例和我们手上的不一定是同一个，比 key 才不会漏。
      */
     public static int level(ItemStack hat, Kind kind) {
-        if (hat.isEmpty() || HatItems.typeOf(hat) != kind.hat()) {
+        if (hat.isEmpty() || !kind.accepts(HatItems.typeOf(hat))) {
             return 0;
         }
         ResourceKey<Enchantment> key = kind.key();
@@ -310,6 +310,18 @@ public final class HatEnchants {
         /** 这个附魔属于哪顶帽子。 */
         public HatType hat() {
             return this.hat;
+        }
+
+        /**
+         * 这顶帽子能不能附上这个专属附魔。
+         *
+         * <p>「神之牛仔帽（全）」对**全部 9 个专属附魔**开放 —— 它本来就是把三顶合一，
+         * 自然兼容所有专属；这是「全」最核心的价值，也是它唯一的通用性来源。
+         * （数据层面靠 JSON 里 {@code supported_items} 写成数组来放开，见
+         * {@code data/hatmod/enchantment/*.json}。）
+         */
+        public boolean accepts(HatType candidate) {
+            return candidate == this.hat || candidate == HatType.ALL;
         }
 
         /** 注册名（不含命名空间），也是 {@code data/hatmod/enchantment/<id>.json} 的文件名。 */

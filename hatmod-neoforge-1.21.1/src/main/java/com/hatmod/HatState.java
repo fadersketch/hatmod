@@ -12,6 +12,18 @@ package com.hatmod;
 final class HatState {
     /** 本轮循环用的是哪顶帽子（中途换帽子会重置整个循环）。 */
     HatType type;
+    /**
+     * 本轮循环「按哪顶帽子走」。
+     *
+     * <p>三顶原色帽就是 {@link #type} 本身；「全」每一轮从黑/白/红里**随机但不重复**地取一条，
+     * 这条路线的蓄力/照射时长、BGM、粒子颜色、光柱帧伤（12/10/15）与帽子渲染颜色都跟着它走。
+     * 「全」的三种专属特性不跟路线走（始终同时生效），所以特性判定仍旧读 {@link #type}。
+     */
+    HatType route;
+    /** 「全」的路线洗牌袋：三条路线打乱后依次取，取空重洗（见 {@code HatAbilities.nextRoute}）。 */
+    HatType[] routeBag;
+    /** {@link #routeBag} 里取到第几个了。 */
+    int routeBagIndex;
     /** 剩余蓄力刻数，> 0 表示处于蓄力阶段（此阶段不能攻击、周围有时间差力场）。 */
     int charge;
     /** 剩余照射刻数，> 0 表示正在照射。 */
@@ -31,6 +43,9 @@ final class HatState {
     int[] targetIds = new int[0];
 
     void reset() {
+        this.route = null;
+        this.routeBag = null;
+        this.routeBagIndex = 0;
         this.charge = 0;
         this.flash = 0;
         this.blinks = 0;

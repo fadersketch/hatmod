@@ -34,11 +34,12 @@ import java.util.concurrent.Executor;
 @EventBusSubscriber(modid = HatMod.MOD_ID, bus = EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
 public final class HatTexturePreloader {
 
-    /** 三顶帽子的护甲贴图。路径由 {@code ArmorMaterial.Layer} 的名字决定，见 {@code HatItems}。 */
+    /** 四顶帽子的护甲贴图。路径由 {@code ArmorMaterial.Layer} 的名字决定，见 {@code HatItems}。 */
     private static final ResourceLocation[] ARMOR_TEXTURES = {
             HatMod.id("textures/models/armor/black_hat_layer_1.png"),
             HatMod.id("textures/models/armor/white_hat_layer_1.png"),
             HatMod.id("textures/models/armor/red_hat_layer_1.png"),
+            HatMod.id("textures/models/armor/all_hat_layer_1.png"),
     };
 
     private HatTexturePreloader() {

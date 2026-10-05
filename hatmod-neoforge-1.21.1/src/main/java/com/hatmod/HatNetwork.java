@@ -73,6 +73,11 @@ public final class HatNetwork {
                 GreenHeartsPayload.STREAM_CODEC,
                 (payload, context) -> context.enqueueWork(
                         () -> com.hatmod.client.GreenHeartRender.set(payload.amount())));
+        registrar.playToClient(
+                RoutePayload.TYPE,
+                RoutePayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(
+                        () -> HatRouteState.setClient(payload.wearerId(), payload.routeOrdinal())));
         registrar.playToServer(
                 SettingsUpdatePayload.TYPE,
                 SettingsUpdatePayload.STREAM_CODEC,
@@ -186,6 +191,59 @@ public final class HatNetwork {
     }
 
     // ------------------------------------------------------------------
+
+    /**
+     * 通知客户端：戴帽者 {@code wearer} 这一轮走的是哪条路线（{@code route}）。
+     *
+     * <p>只有「全」有意义 —— 客户端据此把帽子渲染成路线对应的颜色（黑/白/红）。
+     */
+    public static void sendRoute(LivingEntity wearer, HatType hatType, HatType route) {
+        if (hatType == null || route == null) {
+            return;
+        }
+        PacketDistributor.sendToPlayersTrackingEntityAndSelf(
+                wearer, new RoutePayload(wearer.getId(), route.ordinal()));
+    }
+
+    /**
+     * 只发给**某一个**玩家：戴帽者 {@code wearer} 这一轮走的是哪条路线。
+     *
+     * <p>给「这个玩家刚开始追踪那个戴帽者」用（{@code PlayerEvent.StartTracking}）：
+     * 路线包平时只在**循环开始**时广播，玩家如果在循环中途才走进视野，就收不到那一刻的包，
+     * 帽子的颜色会一直停在兜底的「全」三色贴图上 —— 这里补发一条，颜色立刻对上当前路线。
+     */
+    public static void sendRouteTo(ServerPlayer player, LivingEntity wearer, HatType route) {
+        if (player == null || wearer == null || route == null) {
+            return;
+        }
+        PacketDistributor.sendToPlayer(player, new RoutePayload(wearer.getId(), route.ordinal()));
+    }
+
+    /**
+     * 一个戴帽者这一轮走哪条路线（「全」用；帽子颜色、光柱淡色都跟着它）。
+     */
+    public record RoutePayload(int wearerId, int routeOrdinal) implements CustomPacketPayload {
+
+        public static final CustomPacketPayload.Type<RoutePayload> TYPE =
+                new CustomPacketPayload.Type<>(HatMod.id("route"));
+
+        public static final StreamCodec<RegistryFriendlyByteBuf, RoutePayload> STREAM_CODEC =
+                StreamCodec.of(RoutePayload::write, RoutePayload::read);
+
+        private static void write(RegistryFriendlyByteBuf buf, RoutePayload payload) {
+            buf.writeVarInt(payload.wearerId());
+            buf.writeVarInt(payload.routeOrdinal());
+        }
+
+        private static RoutePayload read(RegistryFriendlyByteBuf buf) {
+            return new RoutePayload(buf.readVarInt(), buf.readVarInt());
+        }
+
+        @Override
+        public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
 
     /**
      * 一条光柱锁定信息：戴帽者、它锁定的目标 id 列表（每道光柱一个）、是否在照射。

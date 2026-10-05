@@ -12,6 +12,7 @@ import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.tags.DamageTypeTags;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.damagesource.CombatRules;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
@@ -59,7 +60,7 @@ import java.util.UUID;
  * 帽子的核心技能状态机，对**任何戴帽子的生物**生效（玩家、车万女仆等）。
  *
  * <pre>
- *   IDLE ──16 格内出现合法敌人──> CHARGE ── 循环开始，播放这顶帽子的音乐
+ *   IDLE ──24 格内出现合法敌人──> CHARGE ── 循环开始，播放这顶帽子的音乐
  *                                  │  （附魔「预知」：蓄力完成的那一刻释放，把 30 格内的敌人定住，时长按等级 1/3、2/3、3/3 递进，III 级打满全程）
  *                                  │  期间：戴帽者不能攻击被动生物与未激怒的中立生物
  *                                  │        （索敌照常：戴帽的生物也会正常锁定/追击目标）
@@ -93,7 +94,13 @@ public final class HatAbilities {
 
     /** 时间差力场半径：5 格。 */
     public static final double SLOW_RADIUS = 5.0D;
-    /** 敌人接近判定半径：有敌人才会进入蓄力阶段。 */
+    /**
+     * 敌人接近判定半径：有敌人才会进入蓄力阶段。
+     *
+     * <p>当前**不再使用**：蓄力触发与光柱锁定共用同一个射程 {@link #FLASH_RANGE}（24 格），
+     * 所以「能触发蓄力」和「能打到」是同一个距离，不存在「进了蓄力却打不到」的空档。
+     * 这个常量保留只是为了兼容旧引用，新代码一律用 {@link #FLASH_RANGE}。
+     */
     public static final double DETECT_RADIUS = 16.0D;
     /** 光柱射程，同时也是锁定敌人的最大距离。 */
     public static final double FLASH_RANGE = 24.0D;
@@ -614,7 +621,7 @@ public final class HatAbilities {
                 clearEnchantArmor(wearer);
                 clearGreenHearts(wearer);
                 clearCycleSpeed(wearer);
-                HatMusic.stop(level, wearer, state.type);
+                HatMusic.stop(level, wearer, state.route);
                 clearBeamSync(wearer, state);
                 STATES.remove(id);
             }
@@ -624,6 +631,7 @@ public final class HatAbilities {
         if (state == null) {
             state = new HatState();
             state.type = type;
+            state.route = type;
             STATES.put(id, state);
         } else if (state.type != type) {
             // 中途换帽子：上一轮的减速/抗性/光柱/增益/音乐全部收掉，从零开始
@@ -633,10 +641,11 @@ public final class HatAbilities {
             clearEnchantArmor(wearer);
             clearGreenHearts(wearer);
             clearCycleSpeed(wearer);
-            HatMusic.stop(level, wearer, state.type);
+            HatMusic.stop(level, wearer, state.route);
             clearBeamSync(wearer, state);
             state.reset();
             state.type = type;
+            state.route = type;
         }
 
         // 白帽：戴着就一直有迅捷 I + 跳跃 I
@@ -655,15 +664,53 @@ public final class HatAbilities {
         }
     }
 
-    /** 进入蓄力阶段：重置本轮状态并播放这顶帽子的音乐。 */
+    /**
+     * 取「全」这一轮的路线：三条路线（黑/白/红）打乱后依次取，取空再重洗 ——
+     * 于是**随机但不重复**：三条路线各走一遍之后才可能重复，中间不会连着两次同色。
+     *
+     * <p>重洗时还多做一步：如果新洗出的第一条正好等于刚刚走过的最后一条，就把它和
+     * 洗牌结果的后一条换个位置 —— 避免正好卡在「洗牌边界」上出现连续同色。
+     *
+     * <p>三顶原色帽没有路线概念，直接返回它自己。
+     */
+    private static HatType nextRoute(HatState state, ServerLevel level) {
+        if (state.type != HatType.ALL) {
+            return state.type;
+        }
+        if (state.routeBag == null || state.routeBagIndex >= state.routeBag.length) {
+            state.routeBag = HatType.routeChoices();
+            RandomSource random = level.getRandom();
+            for (int i = state.routeBag.length - 1; i > 0; i--) {
+                int j = random.nextInt(i + 1);
+                HatType swap = state.routeBag[i];
+                state.routeBag[i] = state.routeBag[j];
+                state.routeBag[j] = swap;
+            }
+            // 跨袋不连色：新袋第一条若和上一轮同色，就换个位置（有别的选择时）
+            if (state.routeBag.length > 1 && state.routeBag[0] == state.route) {
+                HatType swap = state.routeBag[0];
+                state.routeBag[0] = state.routeBag[1];
+                state.routeBag[1] = swap;
+            }
+            state.routeBagIndex = 0;
+        }
+        return state.routeBag[state.routeBagIndex++];
+    }
+
+    /** 进入蓄力阶段：重置本轮状态并播放这顶帽子（或「全」这一轮路线）的音乐。 */
     private static void startCharge(LivingEntity wearer, ServerLevel level, HatState state) {
         ItemStack hat = hatStack(wearer);
+        // 「全」每轮随机取一条路线（黑/白/红，随机不重复）；三顶原色帽就是它自己。
+        // 路线决定本轮的：蓄力/照射时长、BGM、粒子颜色、光柱帧伤、以及帽子渲染颜色。
+        state.route = nextRoute(state, level);
         // 附魔「闪避」多给几次瞬移闪避；蓄力时长本身**不受附魔影响**（要跟音乐对齐）
-        state.charge = HatSettings.chargeTicks(state.type);
+        state.charge = HatSettings.chargeTicks(state.route);
         state.blinks = BLINKS_PER_CHARGE + HatEnchants.extraBlinks(hat);
         state.flashBlinks = 0;
         state.dominionFired = false;
-        HatMusic.play(level, wearer, state.type);
+        HatMusic.play(level, wearer, state.route);
+        // 路线换了一条：把新颜色告诉客户端（帽子会跟着变那个颜色，见 getArmorTexture）
+        HatNetwork.sendRoute(wearer, HatItems.typeOf(hat), state.route);
         // 附魔「预知」不在这里放 —— 它改到**蓄力完成的那一刻**才释放（见 tickingCharge）
     }
 
@@ -672,7 +719,7 @@ public final class HatAbilities {
         // 蓄力全程固定抗性提升 II，蓄力一结束就收（见下面的 clearChargeResistance）
         applyChargeResistance(wearer);
         spawnChargeAura(level, wearer);
-        spawnSlowRing(level, wearer, state.type);
+        spawnSlowRing(level, wearer, state.route);
 
         // 附魔「掌控」：蓄力到第 15 秒时，剥夺最近那个敌人的索敌目标
         maybeFireDominion(wearer, level, state);
@@ -689,7 +736,7 @@ public final class HatAbilities {
             state.flashBlinks = HatEnchants.afterimageBlinks(hatStack(wearer));
             level.playSound(null, wearer.getX(), wearer.getY(), wearer.getZ(),
                     SoundEvents.BEACON_ACTIVATE, SoundSource.PLAYERS, 0.7F, 1.6F);
-            state.flash = HatSettings.flashTicks(state.type);
+            state.flash = HatSettings.flashTicks(state.route);
             // 附魔「预知」：蓄力完成的那一刻释放，30 格内的敌人当场定住 —— 时长按等级取
             // 「本轮循环剩余长度」的 1/3、2/3、3/3（III 级打满，最大值不变）
             fireSoulReapStasis(wearer, level, hatStack(wearer), state.flash);
@@ -741,7 +788,7 @@ public final class HatAbilities {
             return;
         }
         // 蓄力总长各不相同（黑 440 / 白 358 / 红 588），但都是在开始后的第 300 刻触发
-        if (HatSettings.chargeTicks(state.type) - state.charge < HatEnchants.DOMINION_TRIGGER_TICK) {
+        if (HatSettings.chargeTicks(state.route) - state.charge < HatEnchants.DOMINION_TRIGGER_TICK) {
             return;
         }
         int ticks = HatEnchants.dominionTicks(hatStack(wearer));
@@ -1034,7 +1081,8 @@ public final class HatAbilities {
             wearer.addEffect(new MobEffectInstance(MobEffects.DAMAGE_BOOST, STRENGTH_TICKS, 0, false, false, true));
         }
 
-        damageBeam(level, wearer, state.type, hat, targets);
+        // 「全」这一轮按路线走：伤害、伤害类型都取路线那顶帽子；三顶原色帽就是它自己。
+        damageBeam(level, wearer, state.type, state.route, hat, targets);
         // 每道光柱都在轴线附近撒一点火花（没有目标时沿视线撒）
         if (targets.isEmpty()) {
             spawnBeamSparks(level, wearer, wearer.getViewVector(1.0F).normalize());
@@ -1064,7 +1112,7 @@ public final class HatAbilities {
                 startCharge(wearer, level, state);
             } else {
                 state.charge = 0;
-                HatMusic.stop(level, wearer, state.type);
+                HatMusic.stop(level, wearer, state.route);
             }
         }
     }
@@ -1420,18 +1468,66 @@ public final class HatAbilities {
     /**
      * 用绿心挡这一击：从 {@code amount} 里扣掉绿心能吃下的部分，返回剩下的伤害。
      *
-     * <p>因为是在伤害结算之前直接把数值削掉，剩下的才继续走原版流程，所以
-     * **绿心永远排在黄心和血量前面** —— 这就是「抗伤优先级比黄心高」。
-     * 返回 0 表示这一击被绿心整个吃掉（调用方应当把这次伤害取消掉）。
+     * <p><b>扣的是「经过护甲等减伤之后」的数值</b>，不再拿原始伤害直接扣：一套铁甲把 10 点砍成
+     * 4 点，绿心就只掉 4 点而不是 10 点 —— 护甲越厚，绿心越耐用。抗性提升 / 保护附魔同理
+     * （{@link #mitigate} 把原版那几步减伤照走一遍）。
+     *
+     * <p><b>整击被吃下时不扣护甲耐久</b>：这一层是在 {@code LivingHurtEvent}（原版还没走到
+     * {@code hurtArmor}）里把伤害整个取消的，所以护甲一点磨损都没有。
+     *
+     * <p>只吃下一部分时，把剩下那一截**按比例换算回减伤前**的数值交还给原版流程，
+     * 让原版自己做同样的减伤 —— 结果约等于「减伤后的伤害再减去绿心吃掉的部分」。
+     * （原版护甲那条在伤害偏大时略有非线性，这里不做迭代求解，误差只落在「没被吃满」的少数几击上。）
+     *
+     * <p>返回 0 表示这一击被绿心整个吃掉（调用方应当把这次伤害取消掉）。
      */
-    private static float absorbWithGreenHearts(LivingEntity living, float amount) {
+    private static float absorbWithGreenHearts(LivingEntity living, DamageSource source, float amount) {
         float green = greenHearts(living);
         if (green <= 0.0F || amount <= 0.0F) {
             return amount;
         }
-        float absorbed = Math.min(green, amount);
+        float mitigated = mitigate(living, source, amount);
+        if (mitigated <= 0.0F) {
+            // 护甲 / 抗性已经把这一击削到 0：绿心没得扣，照原样放行（护甲该磨损就磨损）
+            return amount;
+        }
+        float absorbed = Math.min(green, mitigated);
         setGreenHearts(living, green - absorbed);
-        return amount - absorbed;
+        if (absorbed >= mitigated) {
+            return 0.0F;
+        }
+        return amount * (mitigated - absorbed) / mitigated;
+    }
+
+    /**
+     * 原版那几步「护甲 / 抗性 / 保护附魔」减伤，按 {@link DamageSource} 的标签逐条照走，
+     * 但**不真的扣护甲耐久**（只算数值）。
+     *
+     * <p>和原版 {@code LivingEntity#getDamageAfterArmorAbsorb} / {@code getDamageAfterMagicAbsorb}
+     * 的结算顺序、公式完全一致，这里只是拿来预估「这一击实际会打到多少血」，
+     * 好让绿心按真实压力扣。任何一条标签命中（例如光柱自带 {@code bypasses_armor}）就跳过对应那一步。
+     */
+    private static float mitigate(LivingEntity living, DamageSource source, float amount) {
+        float result = amount;
+        if (!source.is(DamageTypeTags.BYPASSES_ARMOR)) {
+            result = CombatRules.getDamageAfterAbsorb(result, living.getArmorValue(),
+                    (float) living.getAttributeValue(Attributes.ARMOR_TOUGHNESS));
+        }
+        if (source.is(DamageTypeTags.BYPASSES_EFFECTS)) {
+            return result;
+        }
+        MobEffectInstance resistance = living.getEffect(MobEffects.DAMAGE_RESISTANCE);
+        if (resistance != null && !source.is(DamageTypeTags.BYPASSES_RESISTANCE)) {
+            int percent = (resistance.getAmplifier() + 1) * 5;
+            result = Math.max(result * (25 - percent) / 25.0F, 0.0F);
+        }
+        if (result > 0.0F && !source.is(DamageTypeTags.BYPASSES_ENCHANTMENTS)) {
+            int protection = EnchantmentHelper.getDamageProtection(living.getArmorSlots(), source);
+            if (protection > 0) {
+                result = CombatRules.getDamageAfterMagicAbsorb(result, (float) protection);
+            }
+        }
+        return result;
     }
 
     // ------------------------------------------------------------------
@@ -1470,13 +1566,16 @@ public final class HatAbilities {
         // 「光柱」吸血的绿心：本模组里优先级最高的一层抗伤，先扣它，扣不完的才轮到黄心/血量。
         // 带 bypasses_invulnerability 的伤害（/kill、虚空，以及本模组自己的光柱）不吃绿心 ——
         // 免得一颗绿心把「必死」的伤害也挡下来。
+        //
+        // 绿心吸收的是**经过护甲等减伤之后**的数值（见 absorbWithGreenHearts），所以护甲/抗性/
+        // 保护附魔同样能让绿心更耐用；整个被绿心吃下的那一击直接取消，护甲一点耐久都不掉。
         DamageSource source = event.getSource();
         if (!source.is(DamageTypeTags.BYPASSES_INVULNERABILITY)) {
-            float remaining = absorbWithGreenHearts(entity, event.getAmount());
+            float remaining = absorbWithGreenHearts(entity, source, event.getAmount());
             if (remaining < event.getAmount()) {
                 event.setAmount(remaining);
                 if (remaining <= 0.0F) {
-                    // 这一击被绿心整个吃掉：取消掉，不掉血、不吃击退、不触发无敌帧
+                    // 这一击被绿心整个吃掉：取消掉，不掉血、不吃击退、不触发无敌帧，也不磨损护甲
                     event.setCanceled(true);
                     return;
                 }
@@ -1909,7 +2008,7 @@ public final class HatAbilities {
      * 这圈粒子也跟着一起变大。
      *
      * <p>颜色按帽子分（用的都是**原版粒子自带的颜色**，不额外注册粒子类型）：
-     * 黑 = 幽匿魂（暗青）、白 = 末地烛（白）、红 = 绯红孢子（暗红）。
+     * 黑 = 幽匿魂（暗青）、白 = 末地烛（白）、红 = 绯红孢子（暗红）、全 = 末地烛（白，配金色光柱）。
      * 每圈把起始角随机错开，粒子才不会像一串钉死的点。
      */
     private static void spawnSlowRing(ServerLevel level, LivingEntity wearer, HatType type) {
@@ -1935,7 +2034,7 @@ public final class HatAbilities {
      *
      * <p>刻意写成 if/else 而不是 switch：对枚举做 switch 会让 javac 额外生成一个
      * {@code HatAbilities$1} 合成类，而本模组每个类都要登记进 {@link HatPreloader}
-     * 才不会被"关了 jar 句柄"的优化模组坑到（见那个类的注释）—— 少一个类少一处要维护的。
+     * 才不会被「关了 jar 句柄」的优化模组坑到（见那个类的注释）—— 少一个类少一处要维护的。
      */
     private static ParticleOptions ringParticle(HatType type) {
         if (type == HatType.BLACK) {
@@ -2002,15 +2101,25 @@ public final class HatAbilities {
      * 自定义类型没有现成的防御手段。该类型同时挂进了
      * {@code minecraft:bypasses_invulnerability} 标签，所以灾变那种「无敌帧/伤害上限」
      * 也拦不住它（见 {@link #damageBeam}）。
+     *
+     * @param hatType 这顶帽子的类型（「全」是 ALL）：决定伤害类型 id、附加百分比等**配置**
+     * @param route   「全」本轮走的路线；三顶原色帽就是它自己。**帧伤数值**取它的
+     *                {@link HatType#routeDamage}（黑 12 / 白 10 / 红 15），
+     *                所以「全」轮到哪条路线就用哪条的帧伤。
      */
-    private static void damageBeam(ServerLevel level, LivingEntity wearer, HatType type,
-                                   ItemStack hat, List<LivingEntity> targets) {
-        // 每刻固定伤害：就是这顶帽子的 damagePerTick（默认 10）——
-        // 附魔不再给光柱加伤害（光辉只管神隐、预知只管定身、光柱只管道数）
-        float flatDamage = HatSettings.damagePerTick(type);
+    private static void damageBeam(ServerLevel level, LivingEntity wearer, HatType hatType,
+                                   HatType route, ItemStack hat, List<LivingEntity> targets) {
+        // 每刻固定伤害：
+        //   · 三顶原色帽 —— 自己的 damagePerTick（默认 10，可用调参器改）；
+        //   · 「全」—— 按本轮路线取 12/10/15（routeDamage），**不读「全」自己配置的 15**，
+        //     这样「黑路线 = 黑帽手感」才成立。
+        float flatDamage = hatType == HatType.ALL
+                ? HatType.routeDamage(route)
+                : HatSettings.damagePerTick(hatType);
         // 戴帽者身上的力量/虚弱折成倍率，固定伤害和百分比伤害一起吃（见 beamPowerMultiplier）
         float power = beamPowerMultiplier(wearer);
-        DamageSource source = HatSettings.damageSource(level, wearer, type);
+        // 伤害类型 / 附加百分比等仍按帽子自己的配置走（「全」用的是「全」那份）
+        DamageSource source = HatSettings.damageSource(level, wearer, hatType);
 
         // 每道光柱沿自己的方向结算一遍。红帽附魔「光柱」会有多道：
         // 敌人够多就一人一道；敌人不够时多余的堆叠到已有目标上，按 BEAM_STACK_FACTOR 边际递减。
@@ -2019,7 +2128,7 @@ public final class HatAbilities {
         for (int i = 0; i < targets.size(); i++) {
             int stack = distinct <= 0 ? 0 : i / distinct;
             float factor = power * (float) Math.pow(BEAM_STACK_FACTOR, stack);
-            float drained = damageOneBeam(level, wearer, type, source, flatDamage * factor, factor, targets.get(i));
+            float drained = damageOneBeam(level, wearer, hatType, source, flatDamage * factor, factor, targets.get(i));
             applyLifesteal(wearer, hat, drained);
         }
     }
@@ -2158,6 +2267,29 @@ public final class HatAbilities {
             HatNetwork.sendSettings(player, HatNetwork.FEEDBACK_NONE);
             HatNetwork.sendGreenHearts(player, greenHearts(player));
         }
+    }
+
+    /**
+     * 某个玩家刚开始追踪一个实体：如果那是个戴着「全」的生物，补发一条当前路线给他。
+     *
+     * <p>路线包平时只在**循环开始**广播，所以循环中途走进视野的玩家会漏掉那一刻的包，
+     * 帽子的颜色会一直停在兜底的「全」三色贴图上，直到下一轮循环才纠正。
+     * 这里在开始追踪的瞬间补一条，颜色立刻对上当前路线。
+     */
+    @SubscribeEvent
+    public static void onStartTracking(PlayerEvent.StartTracking event) {
+        if (!(event.getTarget() instanceof LivingEntity living)) {
+            return;
+        }
+        if (HatItems.typeOf(hatStack(living)) != HatType.ALL) {
+            return;
+        }
+        if (!(event.getEntity() instanceof ServerPlayer player)) {
+            return;
+        }
+        HatState state = STATES.get(living.getUUID());
+        HatType route = state != null && state.route != null ? state.route : HatType.ALL;
+        HatNetwork.sendRouteTo(player, living, route);
     }
 
 }

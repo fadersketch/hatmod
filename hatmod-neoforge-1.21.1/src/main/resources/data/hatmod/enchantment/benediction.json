@@ -2,7 +2,10 @@
   "description": {
     "translate": "enchantment.hatmod.benediction"
   },
-  "supported_items": "hatmod:white_hat",
+  "supported_items": [
+    "hatmod:white_hat",
+    "hatmod:all_hat"
+  ],
   "weight": 2,
   "max_level": 3,
   "min_cost": {

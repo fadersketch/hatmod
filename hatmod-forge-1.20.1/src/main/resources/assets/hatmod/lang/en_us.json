@@ -2,6 +2,8 @@
   "item.hatmod.black_hat": "God's Cowboy Hat (Black)",
   "item.hatmod.white_hat": "God's Cowboy Hat (White)",
   "item.hatmod.red_hat": "God's Cowboy Hat (Red)",
+  "item.hatmod.all_hat": "God's Cowboy Hat (All)",
+  "item.hatmod.all_hat.desc": "All three in one · every exclusive enchantment · innate glint",
   "item.hatmod.hat.desc": "The Divine Has No Fixed Form",
   "item.hatmod.hat.durability": "Durability %s · at most 1 wear per %s s · 1 Leather repairs %s",
   "item.hatmod.tuner": "God's Tuner",
@@ -16,6 +18,7 @@
   "hatmod.tuner.hat.black_hat": "Black",
   "hatmod.tuner.hat.white_hat": "White",
   "hatmod.tuner.hat.red_hat": "Red",
+  "hatmod.tuner.hat.all_hat": "All",
   "hatmod.tuner.editing": "Editing: %s",
   "hatmod.tuner.charge": "Charge ticks",
   "hatmod.tuner.flash": "Beam ticks",
@@ -49,5 +52,7 @@
   "enchantment.hatmod.conflagration": "Beam",
   "enchantment.hatmod.conflagration.desc": "Fires up to three extra beams while flashing (+1 per level, up to 2/3/4 at I/II/III). With enough enemies, each beam takes a different one; with too few (a lone boss), the spare beams stack on the nearest enemies with diminishing returns (2nd/3rd/4th beam on the same target = 40%/16%/6.4%), so all four together deal about 1.62x, not 4x.",
   "enchantment.hatmod.dominion": "Dominion",
-  "enchantment.hatmod.dominion.desc": "+5s per level: at charge second 15, the 5 nearest enemies lose their target (+5 per level, up to 15) and are outlined. A dominated mob that still has other enemies nearby is turned on them instead. Works on Wardens too: their target lives in brain memory, so it is wiped together with their anger."
+  "enchantment.hatmod.dominion.desc": "+5s per level: at charge second 15, the 5 nearest enemies lose their target (+5 per level, up to 15) and are outlined. A dominated mob that still has other enemies nearby is turned on them instead. Works on Wardens too: their target lives in brain memory, so it is wiped together with their anger.",
+  "item.hatmod.all_hat.tagline": "The New God Has Arrived",
+  "hatmod.tuner.allRouteNote": "The All hat picks a random route (black/white/red) each cycle: duration follows that route, and its per-tick damage is fixed at 12/10/15. The values here do not apply."
 }

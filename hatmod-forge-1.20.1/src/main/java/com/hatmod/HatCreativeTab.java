@@ -5,7 +5,7 @@ import net.minecraftforge.event.BuildCreativeModeTabContentsEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
-/** 把三个帽子 + 调参器放进原版的「战斗 / 装备」创造模式物品栏。 */
+/** 把四顶帽子 + 调参器放进原版的「战斗 / 装备」创造模式物品栏。 */
 @Mod.EventBusSubscriber(modid = HatMod.MOD_ID, bus = Mod.EventBusSubscriber.Bus.MOD)
 public final class HatCreativeTab {
 
@@ -18,6 +18,7 @@ public final class HatCreativeTab {
             event.accept(HatItems.BLACK_HAT.get());
             event.accept(HatItems.WHITE_HAT.get());
             event.accept(HatItems.RED_HAT.get());
+            event.accept(HatItems.ALL_HAT.get());
             event.accept(HatItems.TUNER.get());
         }
     }

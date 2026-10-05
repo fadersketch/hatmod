@@ -2,6 +2,7 @@ package com.hatmod.client;
 
 import com.hatmod.HatAbilities;
 import com.hatmod.HatItems;
+import com.hatmod.HatRouteState;
 import com.hatmod.HatType;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
@@ -106,6 +107,8 @@ public final class BeamRenderer {
     private static final float[] TINT_BLACK = {0.92F, 0.94F, 1.10F};
     private static final float[] TINT_WHITE = {1.00F, 1.00F, 1.00F};
     private static final float[] TINT_RED = {1.10F, 0.95F, 0.90F};
+    /** 「全」：三色合一，取偏暖金的一档，一眼和另外三顶区分开。 */
+    private static final float[] TINT_ALL = {1.08F, 1.02F, 0.86F};
 
     private BeamRenderer() {
     }
@@ -118,7 +121,22 @@ public final class BeamRenderer {
         if (type == HatType.RED) {
             return TINT_RED;
         }
+        if (type == HatType.ALL) {
+            return TINT_ALL;
+        }
         return TINT_WHITE;
+    }
+
+    /**
+     * 光柱淡色：三顶原色帽取自己的颜色；「全」取**本轮路线**那顶帽子的颜色，
+     * 这样帽子变色时光柱也跟着变（客户端记的路线见 {@link HatRouteState}）。
+     */
+    private static float[] beamTintFor(LivingEntity living) {
+        HatType own = HatItems.typeOf(HatAbilities.hatStack(living));
+        if (own == HatType.ALL) {
+            return beamTint(HatRouteState.routeOf(living.getId(), HatType.ALL));
+        }
+        return beamTint(own);
     }
 
     @SubscribeEvent
@@ -138,8 +156,9 @@ public final class BeamRenderer {
         MultiBufferSource.BufferSource buffers = mc.renderBuffers().bufferSource();
 
         // 服务端已经不在世界里的戴帽者（被卸载/退出，收不到「停止照射」包）先剔掉，
-        // 否则会一直留一条幽灵光柱。
+        // 否则会一直留一条幽灵光柱；路线表也一起清，免得实体 id 被复用后串色。
         BeamTargets.prune(id -> mc.level.getEntity(id) != null);
+        HatRouteState.prune(id -> mc.level.getEntity(id) != null);
 
         boolean any = false;
         for (Entity entity : mc.level.entitiesForRendering()) {            if (!(entity instanceof LivingEntity living)) {
@@ -155,8 +174,9 @@ public final class BeamRenderer {
             // 这里逐个画一条指过去。没有锁到敌人时列表为空，退化成「沿视线一道」。
             int[] targetIds = BeamTargets.get(living.getId());
             int beams = Math.max(1, targetIds.length);
-            // 光柱的淡色取自戴帽者身上那顶帽子（头盔槽或 Curios 饰品栏，客户端都会同步过来）
-            float[] tint = beamTint(HatItems.typeOf(HatAbilities.hatStack(living)));
+            // 光柱的淡色取自戴帽者身上那顶帽子（头盔槽或 Curios 饰品栏，客户端都会同步过来）；
+            // 「全」取本轮路线的颜色，跟帽子变色保持一致。
+            float[] tint = beamTintFor(living);
             float time = (living.tickCount + partialTick) * 0.35F;
 
             for (int i = 0; i < beams; i++) {

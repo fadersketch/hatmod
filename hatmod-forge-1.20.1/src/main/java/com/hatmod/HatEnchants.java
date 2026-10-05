@@ -127,6 +127,9 @@ public final class HatEnchants {
      *
      * <p>绿心怎么来、怎么掉，见 {@code HatAbilities}（无限时长、掉落速度随颗数指数增长、基础 1 秒/颗，
      * 而且**优先级高过黄心**：受伤先扣绿心，扣完才轮到黄心与血量）。
+     *
+     * <p><b>绿心按「减伤之后」的伤害扣</b>：护甲 / 抗性提升 / 保护附魔同样能让绿心更耐用；
+     * 一整击被绿心吃下时，那一击在原版流程里被整个取消，所以**护甲一点耐久都不掉**。
      */
     public static final float BLOODTHIRST_ABSORPTION_EFFICIENCY = 1.0F;
     /**
@@ -203,7 +206,7 @@ public final class HatEnchants {
         if (enchantment == null || !enchantment.isPresent()) {
             return 0;
         }
-        if (hat.isEmpty() || HatItems.typeOf(hat) != kind.hat()) {
+        if (hat.isEmpty() || !kind.accepts(HatItems.typeOf(hat))) {
             return 0;
         }
         return EnchantmentHelper.getItemEnchantmentLevel(enchantment.get(), hat);
@@ -325,6 +328,16 @@ public final class HatEnchants {
             return this.hat;
         }
 
+        /**
+         * 这顶帽子能不能附上这个专属附魔。
+         *
+         * <p>「神之牛仔帽（全）」对**全部 9 个专属附魔**开放 —— 它本来就是把三顶合一，
+         * 自然兼容所有专属；这是「全」最核心的价值，也是它唯一的通用性来源。
+         */
+        public boolean accepts(HatType candidate) {
+            return candidate == this.hat || candidate == HatType.ALL;
+        }
+
         /** 注册名（不含命名空间）。 */
         public String id() {
             return this.id;
@@ -353,10 +366,10 @@ public final class HatEnchants {
             return this.kind;
         }
 
-        /** 专属：只认自己那顶帽子。原版头盔、其它两顶帽子一律 false。 */
+        /** 专属：只认自己那顶帽子（以及三顶合一的「全」）。原版头盔、其它帽子一律 false。 */
         @Override
         public boolean canEnchant(ItemStack stack) {
-            return HatItems.typeOf(stack) == this.kind.hat();
+            return this.kind.accepts(HatItems.typeOf(stack));
         }
 
         /**
@@ -366,7 +379,7 @@ public final class HatEnchants {
          */
         @Override
         public boolean canApplyAtEnchantingTable(ItemStack stack) {
-            return HatItems.typeOf(stack) == this.kind.hat();
+            return this.kind.accepts(HatItems.typeOf(stack));
         }
 
         @Override

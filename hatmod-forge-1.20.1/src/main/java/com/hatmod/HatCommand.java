@@ -40,6 +40,7 @@ public final class HatCommand {
         builder.suggest("black");
         builder.suggest("white");
         builder.suggest("red");
+        builder.suggest("all");
         return builder.buildFuture();
     };
 
@@ -149,7 +150,7 @@ public final class HatCommand {
         return 1;
     }
 
-    /** black / white / red，或 black_hat / white_hat / red_hat；其它返回 null。 */
+    /** black / white / red / all，或带 _hat 的完整名；其它返回 null。 */
     private static HatType hat(CommandContext<CommandSourceStack> context) {
         String raw = StringArgumentType.getString(context, "hat").toLowerCase(java.util.Locale.ROOT);
         for (HatType type : HatType.values()) {
@@ -162,7 +163,7 @@ public final class HatCommand {
 
     private static int unknownHat(CommandContext<CommandSourceStack> context) {
         context.getSource().sendFailure(Component.literal("[HatMod] 没有这顶帽子："
-                + StringArgumentType.getString(context, "hat") + "（black / white / red）"));
+                + StringArgumentType.getString(context, "hat") + "（black / white / red / all）"));
         return 0;
     }
 

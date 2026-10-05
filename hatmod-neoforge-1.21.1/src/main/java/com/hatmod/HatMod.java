@@ -20,6 +20,7 @@ public class HatMod {
         HatItems.register(modBus);
         HatEffects.register(modBus);
         HatParticles.register(modBus);
+        HatRecipes.register(modBus);
         HatSounds.register(modBus);
         HatNetwork.register(modBus);
         // 趁 jar 句柄还开着，把本模组的类全部预先加载好（原因见 HatPreloader 的注释）。

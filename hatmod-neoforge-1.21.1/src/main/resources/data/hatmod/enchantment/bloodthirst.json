@@ -2,7 +2,10 @@
   "description": {
     "translate": "enchantment.hatmod.bloodthirst"
   },
-  "supported_items": "hatmod:red_hat",
+  "supported_items": [
+    "hatmod:red_hat",
+    "hatmod:all_hat"
+  ],
   "weight": 2,
   "max_level": 3,
   "min_cost": {

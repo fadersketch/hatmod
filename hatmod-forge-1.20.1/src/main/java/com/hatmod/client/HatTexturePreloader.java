@@ -29,16 +29,17 @@ import java.util.concurrent.Executor;
  * 都确定是开着的）先把这三张贴图点一遍，之后渲染时就只是查缓存，不再碰 jar
  * ——和 {@link com.hatmod.HatPreloader} 提前加载类是同一个思路，只是一个管类、一个管贴图。
  *
- * <p>点一遍不会多占资源：这三张图本来第一次戴帽子也要加载，这里只是把时机提前到"肯定读得到"的时候。
+ * <p>点一遍不会多占资源：这四张图本来第一次戴帽子也要加载，这里只是把时机提前到"肯定读得到"的时候。
  */
 @Mod.EventBusSubscriber(modid = HatMod.MOD_ID, bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
 public final class HatTexturePreloader {
 
-    /** 三顶帽子的护甲贴图。路径由 {@code ArmorMaterial} 的名字决定，见 {@code HatItems}。 */
+    /** 四顶帽子的护甲贴图。路径由 {@code ArmorMaterial} 的名字决定，见 {@code HatItems}。 */
     private static final ResourceLocation[] ARMOR_TEXTURES = {
             HatMod.id("textures/models/armor/black_hat_layer_1.png"),
             HatMod.id("textures/models/armor/white_hat_layer_1.png"),
             HatMod.id("textures/models/armor/red_hat_layer_1.png"),
+            HatMod.id("textures/models/armor/all_hat_layer_1.png"),
     };
 
     private HatTexturePreloader() {

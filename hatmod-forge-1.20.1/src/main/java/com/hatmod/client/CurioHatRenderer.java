@@ -2,6 +2,8 @@ package com.hatmod.client;
 
 import com.hatmod.HatItems;
 import com.hatmod.HatMod;
+import com.hatmod.HatRouteState;
+import com.hatmod.HatType;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.minecraft.client.Minecraft;
@@ -27,26 +29,33 @@ import top.theillusivec4.curios.api.client.ICurioRenderer;
  * 坐标空间**里直接渲染。部件自己的 {@code translateAndRotate} 由 {@code renderToBuffer}
  * 内部完成，这里不能再转一次 —— 转两遍帽子会飞到天上。
  *
+ * <p><b>贴图按本轮路线取</b>：护甲槽那条路走的是 {@code IForgeItem#getArmorTexture}，
+ * 而这里绕开了原版护甲层、自己直接画，所以必须**单独**查一次路线
+ * （{@link HatRouteState}）——否则饰品栏里的「全」不会跟着变色。
+ *
  * <p>只在装了 Curios 时才会被加载：注册入口 {@link #register()} 由客户端初始化
  * 用 {@code ModList.isLoaded("curios")} 挡着（见 {@code HatModClient}）。
  */
 public final class CurioHatRenderer implements ICurioRenderer {
 
-    private final ResourceLocation texture;
+    /** 这顶帽子自己的颜色名（三顶原色帽用它；「全」会被本轮路线覆盖）。 */
+    private final String colorName;
     private CowboyHatModel model;
 
-    private CurioHatRenderer(ResourceLocation texture) {
-        this.texture = texture;
+    private CurioHatRenderer(String colorName) {
+        this.colorName = colorName;
     }
 
-    /** 把三顶帽子登记给 Curios；只有装了 Curios 时才允许调用。 */
+    /** 把四顶帽子登记给 Curios；只有装了 Curios 时才允许调用。 */
     public static void register() {
         CuriosRendererRegistry.register(HatItems.BLACK_HAT.get(),
-                () -> new CurioHatRenderer(armorTexture("black_hat")));
+                () -> new CurioHatRenderer("black_hat"));
         CuriosRendererRegistry.register(HatItems.WHITE_HAT.get(),
-                () -> new CurioHatRenderer(armorTexture("white_hat")));
+                () -> new CurioHatRenderer("white_hat"));
         CuriosRendererRegistry.register(HatItems.RED_HAT.get(),
-                () -> new CurioHatRenderer(armorTexture("red_hat")));
+                () -> new CurioHatRenderer("red_hat"));
+        CuriosRendererRegistry.register(HatItems.ALL_HAT.get(),
+                () -> new CurioHatRenderer("all_hat"));
     }
 
     /** 和护甲槽用的是同一张贴图（{@code ArmorMaterial.getName()} 定位的那张）。 */
@@ -63,9 +72,16 @@ public final class CurioHatRenderer implements ICurioRenderer {
         if (!(renderLayerParent.getModel() instanceof HumanoidModel<?> humanoid)) {
             return;
         }
+        // 「全」随本轮路线换色：从实体 id 查路线；查不到就用帽子原色。
+        HatType own = HatItems.typeOf(stack);
+        HatType route = own == HatType.ALL
+                ? HatRouteState.routeOf(slotContext.entity().getId(), HatType.ALL)
+                : own;
+        String name = own == HatType.ALL ? HatRouteState.textureName(route) : this.colorName;
+
         CowboyHatModel hat = model();
         hat.head.copyFrom(humanoid.head);
-        VertexConsumer consumer = buffer.getBuffer(RenderType.armorCutoutNoCull(texture));
+        VertexConsumer consumer = buffer.getBuffer(RenderType.armorCutoutNoCull(armorTexture(name)));
         hat.renderToBuffer(poseStack, consumer, packedLight, OverlayTexture.NO_OVERLAY,
                 1.0F, 1.0F, 1.0F, 1.0F);
     }
