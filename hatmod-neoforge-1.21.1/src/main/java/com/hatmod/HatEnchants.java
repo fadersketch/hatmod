@@ -66,8 +66,6 @@ public final class HatEnchants {
     public static final int BENEDICTION_AMPLIFIER_PER_LEVEL = 1;
     /** 「疾行」每级把等级加多少（和上面分开写只是为了可读性，数值一致）。 */
     public static final int BENEDICTION_JUMP_PER_LEVEL = 1;
-    /** 「光辉」每级给光柱加多少每刻伤害。 */
-    public static final float RADIANCE_DAMAGE_PER_LEVEL = 1.0F;
 
     // ------------------------------------------------------------------
     // 「掌控」：蓄力到第 15 秒时，剥夺最近敌人的索敌目标
@@ -113,12 +111,14 @@ public final class HatEnchants {
     // 附魔各自的专属机制
     //
     // 早先这几个只是同一行加法（每级 +1 伤害），彼此毫无区别 —— 那样不如打成一本
-    // 通用附魔书。现在每个都多带一个只属于自己帽子的机制：
+    // 通用附魔书。现在每个都换成**只属于自己帽子的机制**，都不再加光柱伤害：
     //   预知（黑）—— 定身静止：蓄力完成的那一刻定住周围所有敌人，时长按等级递进到本轮循环结束。
-    //                 强化方向从「加伤害」换成了「控制」，所以它**不再给光柱加伤害**。
     //   光辉（白）—— 神隐支援：照射期间自己与**力场圈内**的队友获得强化隐身（6/8/10 秒）
     //   吸血（红）—— 吸血：光柱打掉的血量按比例回给自己（每级 +5%），满血时溢出转成绿心
     //   光柱（红）—— 多道光柱：每级多 1 道（各锁不同敌人）
+    //
+    // 所以**光柱的每刻伤害不再吃任何附魔加成**：白帽「光辉」只给神隐、黑帽「预知」只给定身、
+    // 红帽「光柱」只加道数。三顶帽子的光柱基础伤害一律是各自 damagePerTick（默认 10）。
     // ------------------------------------------------------------------
 
     // ------------------------------------------------------------------
@@ -195,16 +195,6 @@ public final class HatEnchants {
     }
 
     /**
-     * 光柱每刻的附魔额外伤害。
-     *
-     * <p>现在只剩白帽「光辉」一家：黑帽「预知」走的是控制（定身静止），不再加伤害 ——
-     * 它那一份并进了控制，见 {@link #hasSoulReap(ItemStack)}。
-     */
-    public static float beamDamageBonus(ItemStack hat) {
-        return level(hat, Kind.RADIANCE) * RADIANCE_DAMAGE_PER_LEVEL;
-    }
-
-    /**
      * 「光柱」这次照射一共打几道光柱（基础 1 道 + 每级 1 道 → I/II/III = 2/3/4 道）。
      *
      * <p>没附魔也返回 1 —— 光柱本身是红帽的固有手段，附魔只是让它多几道。
@@ -256,8 +246,8 @@ public final class HatEnchants {
     }
 
     /**
-     * 「光辉」有没有附上（≥ I 级就发射击期间的「神隐」支援；等级本身决定光柱伤害加成
-     * 与「神隐」时长，见 {@link #veilDurationTicks}）。
+     * 「光辉」有没有附上（≥ I 级就发射击期间的「神隐」支援；等级只决定「神隐」时长，
+     * 不再加光柱伤害 —— 见 {@link #veilDurationTicks}）。
      */
     public static boolean hasRadiance(ItemStack hat) {
         return level(hat, Kind.RADIANCE) > 0;

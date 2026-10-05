@@ -43,7 +43,7 @@
   "enchantment.hatmod.benediction": "疾行",
   "enchantment.hatmod.benediction.desc": "永久迅捷 / 跳跃的等级 +1（每级 +1）；跳跃最高只到 II。",
   "enchantment.hatmod.radiance": "光辉",
-  "enchantment.hatmod.radiance.desc": "光柱每刻额外造成 1 点伤害（每级 +1）；照射期间自己与时间差力场圈内的所有队友获得「神隐」（「缓速」把力场撑大，就罩住更多人）—— 就是原版隐身，模型照原版规矩消失，另加「定期甩掉已经锁定自己的敌人」，连监守者也嗅不到。神隐持续 6/8/10 秒（按本附魔等级），剩余不足 2 秒时补足，所以照完还会再持续这么久。",
+  "enchantment.hatmod.radiance.desc": "照射期间，自己与时间差力场圈内的所有队友获得「神隐」（「缓速」把力场撑大，就罩住更多人）—— 就是原版隐身，模型照原版规矩消失，另加「定期甩掉已经锁定自己的敌人」，连监守者也嗅不到。神隐持续 6/8/10 秒（按本附魔等级），剩余不足 2 秒时补足，所以照完还会再持续这么久。不再给光柱加伤害。",
   "enchantment.hatmod.bloodthirst": "吸血",
   "enchantment.hatmod.bloodthirst.desc": "光柱打掉的血按 5%/级 吸回自身，不设上限；满血时溢出的治疗原样（无损耗）转成绿心 —— 一种优先级比黄心更高的独立护盾：受伤先扣绿心，扣完才轮到黄心和血量；持续无限，但掉落速度随颗数指数增长、基础 1 秒/颗。原版黄心不受影响，还是黄的。",
   "enchantment.hatmod.conflagration": "光柱",

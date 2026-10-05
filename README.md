@@ -19,9 +19,9 @@
 
 推荐从 **Releases** 下载：
 
-- **[最新版本（v1.0.0）](https://github.com/fadersketch/hatmod/releases/latest)**
-  - `hatmod-forge-1.20.1-1.0.0.jar` —— 给 **Minecraft 1.20.1 + Forge**
-  - `hatmod-neoforge-1.21.1-1.0.0.jar` —— 给 **Minecraft 1.21.1 + NeoForge**
+- **[最新版本（v1.0.1）](https://github.com/fadersketch/hatmod/releases/latest)**
+  - `hatmod-forge-1.20.1-1.0.1.jar` —— 给 **Minecraft 1.20.1 + Forge**
+  - `hatmod-neoforge-1.21.1-1.0.1.jar` —— 给 **Minecraft 1.21.1 + NeoForge**
 
 把对应版本的那一个丢进 `.minecraft/mods/` 即可（**只装一个**，装错版本会崩）。
 本模组**不需要任何前置模组**。仓库根目录里也放了同样两个 jar，方便直接取用。
@@ -170,7 +170,7 @@ N N N
 | 预知 | `soul_reap` | 黑 | **蓄力完成的那一刻**释放：把 30 格内的敌人定在原处，时长按等级取「本轮循环剩余长度」的 1/3、2/3、3/3；视野**整段变为黑白渲染**，浮现「我早已料到」 | 持续 = 本轮剩余长度 × 等级比 |
 | 缓速 | `requiem` | 白 | 时间差力场半径 +1 格 | 5 → 8 格 |
 | 疾行 | `benediction` | 白 | 永久迅捷 / 跳跃等级 +1（**跳跃封顶 II**） | 迅捷 I → IV；跳跃封顶 II |
-| 光辉 | `radiance` | 白 | 光柱每刻伤害 +1；照射期间自己与**时间差力场圈内**的所有队友获得**「神隐」** | 伤害 2 → 5，神隐 6 → 10 秒 |
+| 光辉 | `radiance` | 白 | 照射期间自己与**时间差力场圈内**的所有队友获得**「神隐」** | 神隐 6 → 10 秒 |
 | 吸血 | `bloodthirst` | 红 | 光柱打掉的血按比例**吸血**回自身（不设上限），满血时溢出的治疗转成**绿心** | 吸血 15% |
 | 掌控 | `dominion` | 红 | 让最近的敌人失去索敌 +5 秒（每级 +5 人、最多 15 人），并让它们**掉转枪口**去打身边的敌人 | 5 / 10 / 15 人，15 秒 |
 | 光柱 | `conflagration` | 红 | 最多多发射 3 道光柱（每级 +1）；敌人够多就**一人一道**，敌人不够时多余的**堆叠**到最近的敌人身上、同一目标每多叠一道按边际递减打折 | 最多 4 道，全堆一人 ≈ 1.62 倍 |
@@ -250,8 +250,8 @@ gradle build
 ```
 hatmod-forge-1.20.1/                 Forge 1.20.1 源码（含完整设计文档 README.md）
 hatmod-neoforge-1.21.1/              NeoForge 1.21.1 源码（含完整设计文档 README.md）
-hatmod-forge-1.20.1-1.0.0.jar        成品，给 1.20.1 Forge
-hatmod-neoforge-1.21.1-1.0.0.jar     成品，给 1.21.1 NeoForge
+hatmod-forge-1.20.1-1.0.1.jar        成品，给 1.20.1 Forge
+hatmod-neoforge-1.21.1-1.0.1.jar     成品，给 1.21.1 NeoForge
 ```
 
 想改数值 / 看实现细节，进对应子树目录读它的 `README.md`。

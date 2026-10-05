@@ -1996,8 +1996,9 @@ public final class HatAbilities {
      */
     private static void damageBeam(ServerLevel level, LivingEntity wearer, HatType type,
                                    ItemStack hat, List<LivingEntity> targets) {
-        // 附魔加成的每刻固定伤害（光辉），只有戴对应帽子时才是非 0
-        float flatDamage = HatSettings.damagePerTick(type) + HatEnchants.beamDamageBonus(hat);
+        // 每刻固定伤害：就是这顶帽子的 damagePerTick（默认 10）——
+        // 附魔不再给光柱加伤害（光辉只管神隐、预知只管定身、光柱只管道数）
+        float flatDamage = HatSettings.damagePerTick(type);
         // 戴帽者身上的力量/虚弱折成倍率，固定伤害和百分比伤害一起吃（见 beamPowerMultiplier）
         float power = beamPowerMultiplier(wearer);
         DamageSource source = HatSettings.damageSource(level, wearer, type);
