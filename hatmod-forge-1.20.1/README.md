@@ -298,6 +298,10 @@ N N N
   把收尾让给固定伤害走正常死亡流程（否则会卡在「0 血不死」，不掉落也没击杀）。
   1.20.1 没有 `bypasses_cooldown` 伤害标签，改为每刻清零 `invulnerableTime`，
   从而绕过原版 10 刻受击无敌帧。
+- **命中反馈**：被照中的敌人**每刻**都会冒出一小簇红色「受伤」碎片和几粒光柱同款火星，
+  并持续保持受击红闪。原版的受击动画只在真正结算伤害的那一刻播一次、还有节流，
+  光柱虽然每刻都在扣血，光靠它看起来像隔几秒才挨一下。这些特效**全部在客户端生成**、不发包，
+  每个观察者各自看到，服务端零负担（`BeamRenderer.spawnHitFeedback`）。
 - 被照中的敌人同时获得**缓慢 255**（amplifier 254）、速度归零，**完全动不了**。
 - **其他生物戴帽子时，玩家也能看到它的光柱**（光柱对每个戴帽子的生物各画一条）。
 
@@ -940,7 +944,7 @@ N N N
 gradle build
 ```
 
-产物：`build/libs/hatmod-forge-1.20.1-1.0.4.jar`，放进 `.minecraft/mods/`。
+产物：`build/libs/hatmod-forge-1.20.1-1.0.5.jar`，放进 `.minecraft/mods/`。
 
 > `libs/curios-forge-5.14.1+1.20.1-api.jar` 是**编译期**用的 Curios API（`compileOnly`，
 > 不会打进成品）。放在仓库里是为了离线也能编译，不需要去连 Curios 的 maven。

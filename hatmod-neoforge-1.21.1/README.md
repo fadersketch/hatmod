@@ -297,6 +297,10 @@ N N N
   把收尾让给固定伤害走正常死亡流程（否则会卡在「0 血不死」，不掉落也没击杀）。
   该类型带 `minecraft:bypasses_cooldown` 标签，绕过原版 10 刻受击无敌帧；
   代码里同时再清零一次 `invulnerableTime` 作为双保险。
+- **命中反馈**：被照中的敌人**每刻**都会冒出一小簇红色「受伤」碎片和几粒光柱同款火星，
+  并持续保持受击红闪。原版的受击动画只在真正结算伤害的那一刻播一次、还有节流，
+  光柱虽然每刻都在扣血，光靠它看起来像隔几秒才挨一下。这些特效**全部在客户端生成**、不发包，
+  每个观察者各自看到，服务端零负担（`BeamRenderer.spawnHitFeedback`）。
 - 被照中的敌人同时获得**缓慢 255**（amplifier 254）、速度归零，**完全动不了**。
 - **其他生物戴帽子时，玩家也能看到它的光柱**（光柱对每个戴帽子的生物各画一条）。
 
@@ -892,7 +896,7 @@ mod jar 的文件系统句柄。之后**第一次**用到某个类时，类加�
 gradle build
 ```
 
-产物：`build/libs/hatmod-neoforge-1.21.1-1.0.4.jar`，放进 `.minecraft/mods/`。
+产物：`build/libs/hatmod-neoforge-1.21.1-1.0.5.jar`，放进 `.minecraft/mods/`。
 （NeoForge 版本不需要额外前置模组。）
 
 > `libs/curios-neoforge-9.5.1+1.21.1-api.jar` 是**编译期**用的 Curios API（`compileOnly`，

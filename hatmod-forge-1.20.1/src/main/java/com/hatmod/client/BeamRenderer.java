@@ -3,6 +3,7 @@ package com.hatmod.client;
 import com.hatmod.HatAbilities;
 import com.hatmod.HatEnchants;
 import com.hatmod.HatItems;
+import com.hatmod.HatParticles;
 import com.hatmod.HatRouteState;
 import com.hatmod.HatType;
 import com.mojang.blaze3d.vertex.PoseStack;
@@ -10,7 +11,9 @@ import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.texture.OverlayTexture;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.util.Mth;
+import net.minecraft.util.RandomSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.phys.Vec3;
@@ -21,6 +24,9 @@ import net.minecraftforge.fml.common.Mod;
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 绘制"手电筒"光锥。
@@ -162,7 +168,11 @@ public final class BeamRenderer {
         HatRouteState.prune(id -> mc.level.getEntity(id) != null);
 
         boolean any = false;
-        for (Entity entity : mc.level.entitiesForRendering()) {            if (!(entity instanceof LivingEntity living)) {
+        long tick = mc.level.getGameTime();
+        // 命中特效按「客户端刻」补一次：这个钩子每帧都会跑，不能每帧都撒粒子
+        List<LivingEntity> feedbackTargets = tick != lastFeedbackTick ? new ArrayList<>() : null;
+        for (Entity entity : mc.level.entitiesForRendering()) {
+            if (!(entity instanceof LivingEntity living)) {
                 continue;
             }
             // 「正在照射」由本模组自己的包同步（BeamTargets），**不看状态效果**：
@@ -177,6 +187,14 @@ public final class BeamRenderer {
             int[] targetIds = BeamTargets.get(living.getId());
             int beams = HatAbilities.BASE_BEAM_COUNT
                     + HatEnchants.conflagrationExtraBeams(HatAbilities.hatStack(living));
+            if (feedbackTargets != null) {
+                for (int id : targetIds) {
+                    Entity hit = mc.level.getEntity(id);
+                    if (hit instanceof LivingEntity hitLiving) {
+                        feedbackTargets.add(hitLiving);
+                    }
+                }
+            }
             // 光柱的淡色取自戴帽者身上那顶帽子（头盔槽或 Curios 饰品栏，客户端都会同步过来）；
             // 「全」取本轮路线的颜色，跟帽子变色保持一致。
             float[] tint = beamTintFor(living);
@@ -230,10 +248,57 @@ public final class BeamRenderer {
             }
         }
 
+        if (feedbackTargets != null) {
+            lastFeedbackTick = tick;
+            for (LivingEntity target : feedbackTargets) {
+                spawnHitFeedback(mc, target);
+            }
+        }
+
         if (any) {
             buffers.endBatch(BeamRenderTypes.beamCore());
             buffers.endBatch(BeamRenderTypes.beam());
         }
+    }
+
+    /** 上一次补命中特效的客户端刻；渲染是每帧的，用它把特效压到每刻一次。 */
+    private static long lastFeedbackTick = Long.MIN_VALUE;
+
+    /**
+     * 光柱命中目标的**每刻**反馈。
+     *
+     * <p>原版受击动画（红闪 + 轻微仰头）只在真正结算伤害的那一刻播一次，还有节流；
+     * 光柱虽然每刻都在扣血，看起来却像隔几秒才挨一下。这里每客户端刻在目标身上补一小簇
+     * 红色「受伤」碎片和火星，并把受击闪烁续到下一刻，把「每刻都在挨打」表现出来。
+     *
+     * <p>全部在客户端生成、不发包：每个观察者各自看到，服务端零负担。
+     */
+    private static void spawnHitFeedback(Minecraft mc, LivingEntity target) {
+        if (target.isRemoved() || !target.isAlive()) {
+            return;
+        }
+        RandomSource random = mc.level.random;
+        double halfWidth = target.getBbWidth() * 0.8D;
+        double height = target.getBbHeight();
+        // 红色「受伤」碎片：最直观的「一直在掉血」
+        for (int i = 0; i < 3; i++) {
+            double x = target.getX() + (random.nextDouble() - 0.5D) * halfWidth;
+            double y = target.getY() + height * (0.30D + random.nextDouble() * 0.5D);
+            double z = target.getZ() + (random.nextDouble() - 0.5D) * halfWidth;
+            mc.level.addParticle(ParticleTypes.DAMAGE_INDICATOR, x, y, z, 0.0D, 0.02D, 0.0D);
+        }
+        // 光柱同款亮芯火星，让命中点和光柱连成一体
+        for (int i = 0; i < 2; i++) {
+            double x = target.getX() + (random.nextDouble() - 0.5D) * halfWidth;
+            double y = target.getY() + height * (0.30D + random.nextDouble() * 0.5D);
+            double z = target.getZ() + (random.nextDouble() - 0.5D) * halfWidth;
+            mc.level.addParticle(HatParticles.FLASH_LIGHT.get(), x, y, z,
+                    (random.nextDouble() - 0.5D) * 0.08D,
+                    (random.nextDouble() - 0.5D) * 0.08D,
+                    (random.nextDouble() - 0.5D) * 0.08D);
+        }
+        // 受击闪烁续到下一刻：原版只在结算伤害时播，这里手动补上每刻的红闪
+        target.hurtTime = target.hurtDuration = 10;
     }
 
     /**

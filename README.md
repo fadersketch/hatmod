@@ -22,9 +22,9 @@
 
 推荐从 **Releases** 下载：
 
-- **[最新版本（v1.0.4）](https://github.com/fadersketch/hatmod/releases/latest)**
-  - `hatmod-forge-1.20.1-1.0.4.jar` —— 给 **Minecraft 1.20.1 + Forge**
-  - `hatmod-neoforge-1.21.1-1.0.4.jar` —— 给 **Minecraft 1.21.1 + NeoForge**
+- **[最新版本（v1.0.5）](https://github.com/fadersketch/hatmod/releases/latest)**
+  - `hatmod-forge-1.20.1-1.0.5.jar` —— 给 **Minecraft 1.20.1 + Forge**
+  - `hatmod-neoforge-1.21.1-1.0.5.jar` —— 给 **Minecraft 1.21.1 + NeoForge**
 
 把对应版本的那一个丢进 `.minecraft/mods/` 即可（**只装一个**，装错版本会崩）。
 本模组**不需要任何前置模组**。仓库根目录里也放了同样两个 jar，方便直接取用。
@@ -160,6 +160,8 @@ N N N
   它挂进了 `minecraft:bypasses_invulnerability` 标签，所以「受击无敌帧 / 单次伤害上限」也拦不住它。
 - 附加的 5% 直接 `setHealth`，是**强制百分比伤害**；但只改血不触发死亡，
   所以目标血量低于最大生命的 **5%** 后就不再扣附加伤害，把收尾让给固定伤害走正常死亡流程。
+- **命中反馈**：被照中的敌人**每刻**都会冒出红色「受伤」碎片和光柱同款火星，并保持受击红闪 ——
+  原版受击动画有节流，光靠它看不出每刻都在掉血。特效全在客户端生成，不发包。
 - 被照中的敌人同时获得**缓慢 255**、速度归零，**完全动不了**。
 - **其他生物戴帽子时，玩家也能看到它的光柱**（对每个戴帽子的生物各画一条）。
 
@@ -271,8 +273,8 @@ gradle build
 ```
 hatmod-forge-1.20.1/                 Forge 1.20.1 源码（含完整设计文档 README.md）
 hatmod-neoforge-1.21.1/              NeoForge 1.21.1 源码（含完整设计文档 README.md）
-hatmod-forge-1.20.1-1.0.4.jar        成品，给 1.20.1 Forge
-hatmod-neoforge-1.21.1-1.0.4.jar     成品，给 1.21.1 NeoForge
+hatmod-forge-1.20.1-1.0.5.jar        成品，给 1.20.1 Forge
+hatmod-neoforge-1.21.1-1.0.5.jar     成品，给 1.21.1 NeoForge
 ```
 
 想改数值 / 看实现细节，进对应子树目录读它的 `README.md`。
