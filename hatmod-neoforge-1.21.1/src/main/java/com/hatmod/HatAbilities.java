@@ -1065,10 +1065,11 @@ public final class HatAbilities {
 
     private static void tickingFlash(LivingEntity wearer, ServerLevel level, HatState state) {
         // 每刻重新锁最近的敌人：更近的顶掉旧的，也就是会「转火」。
-        // 红帽附魔「光柱」会同时打多道光柱：每道光**各锁一个不同的敌人**，
-        // 敌人不够就少发几道（单挑一个 Boss 时仍旧只有一道），见 beamTargets。
+        // 所有帽子天生同时打 BASE_BEAM_COUNT 道；红帽附魔「光柱」在此之上每级再加 1 道。
+        // 每道光各锁一个敌人，敌人不够时基础那几道可以无衰减地叠在同一个目标上
+        // （附魔多出来的道仍按边际递减），见 beamTargets / damageBeam。
         ItemStack hat = hatStack(wearer);
-        int beamCount = HatEnchants.conflagrationBeams(hat);
+        int beamCount = BASE_BEAM_COUNT + HatEnchants.conflagrationExtraBeams(hat);
         List<LivingEntity> targets = beamTargets(wearer, beamCount);
 
         // 「正在照射 / 锁定谁」全部走本模组自己的包（BeamTargets），不依赖任何状态效果。
@@ -1083,9 +1084,12 @@ public final class HatAbilities {
         }
 
         damageBeam(level, wearer, state.type, state.route, hat, targets);
-        // 每道光柱都在轴线附近撒一点火花（没有目标时沿视线撒）
+        // 每道光柱都在轴线附近撒一点火花（没有目标时沿视线撒，同样按道数散开）
         if (targets.isEmpty()) {
-            spawnBeamSparks(level, wearer, wearer.getViewVector(1.0F).normalize());
+            Vec3 view = wearer.getViewVector(1.0F).normalize();
+            for (int i = 0; i < beamCount; i++) {
+                spawnBeamSparks(level, wearer, fanDirection(view, i, beamCount));
+            }
         } else {
             for (int i = 0; i < targets.size(); i++) {
                 Vec3 aim = fanDirection(beamDirection(wearer, targets.get(i)), i, targets.size());
@@ -1118,12 +1122,32 @@ public final class HatAbilities {
     }
 
     /**
+     * 所有帽子**天生**同时打几道光柱。
+     *
+     * <p>这 {@code 2} 道是「基础光柱」：各自锁一个敌人；敌人不够时**可以叠在同一个敌人身上，
+     * 且完全不衰减**（两道各自满伤）。附魔「光柱」是在此之上再加道数，见
+     * {@link HatEnchants#conflagrationExtraBeams}。
+     */
+    public static final int BASE_BEAM_COUNT = 2;
+
+    /**
+     * 单道光柱的伤害倍率：基础 2 道把原来 1 道的伤害劈成两半，每道 ×0.5，
+     * 两道合计与改动前的一道光柱相同。
+     *
+     * <p>附魔「光柱」多出来的道也按这个倍率结算（它们同样是「一道光柱」），
+     * 再另行叠加 {@link #BEAM_STACK_FACTOR} 的边际递减。
+     */
+    public static final float BEAM_DAMAGE_SCALE = 0.5F;
+
+    /**
      * 多道光柱堆叠在同一目标上的**边际递减**系数：同一目标上第 m 道（从 0 数）乘
      * {@code BEAM_STACK_FACTOR^m}。
      *
-     * <p>敌人少于光柱数时（比如单挑一个 Boss），多余的光柱会落回已有目标而不是白白浪费 ——
-     * 但每多叠一道就打个折，所以 4 道全堆一个人是 1 + 0.4 + 0.16 + 0.064 = 1.624 倍，
-     * 而不是 4 倍。调大它红帽单挑更强，调小则更接近「一人一道」。
+     * <p>只作用于**附魔「光柱」加出来的**那些道 —— 基础 {@link #BASE_BEAM_COUNT} 道
+     * 叠在同一个人身上不打折。敌人少于光柱数时（比如单挑一个 Boss），多余的附魔光柱会落回
+     * 已有目标而不是白白浪费，但每多叠一道就打个折：三道光柱全堆一个人是
+     * 1 + 0.4 + 0.16 = 1.56 倍（相对一道附魔光柱），而不是 3 倍。
+     * 调大它红帽单挑更强，调小则更接近「一人一道」。
      */
     private static final float BEAM_STACK_FACTOR = 0.4F;
 
@@ -1131,9 +1155,13 @@ public final class HatAbilities {
      * 这次照射每道光柱各自锁谁：由近到远取敌人，**敌人不够时多余的光柱堆叠到已有目标上**。
      *
      * <p>返回列表的长度恒为 {@code beamCount}（有敌人时），下标 i 就是「第 i 道光柱」：
-     * 目标取 {@code enemies[i % n]}，堆叠轮次 {@code i / n}。于是敌人够多时一人一道（系数全 1），
-     * 敌人不够时最近的那些敌人各多挨几道、第 m 道按 {@link #BEAM_STACK_FACTOR} 递减。
-     * 一个敌人都没有时返回空列表（客户端仍会沿视线画出一道，见 {@link #tickingFlash}）。
+     * 目标取 {@code enemies[i % n]}，堆叠轮次 {@code i / n}。于是敌人够多时一人一道。
+     *
+     * <p>注意区分两种道：下标小于 {@link #BASE_BEAM_COUNT} 的是**基础光柱**，堆叠时不衰减；
+     * 之后的是附魔「光柱」加出来的，堆叠时按 {@link #BEAM_STACK_FACTOR} 递减
+     * （扣血倍率在 {@link #damageBeam} 里算）。
+     * 一个敌人都没有时返回空列表（客户端仍会沿视线画出 {@link #BASE_BEAM_COUNT} 道，
+     * 见 {@link #tickingFlash}）。
      */
     private static List<LivingEntity> beamTargets(LivingEntity wearer, int beamCount) {
         List<LivingEntity> enemies = findNearestEnemies(wearer, beamCount);
@@ -2120,12 +2148,18 @@ public final class HatAbilities {
         DamageSource source = HatSettings.damageSource(level, wearer, hatType);
 
         // 每道光柱各打自己锁定的那个目标。红帽附魔「光柱」会有多道：
-        // 敌人够多就一人一道；敌人不够时多余的堆叠到已有目标上，按 BEAM_STACK_FACTOR 边际递减。
-        // 没有目标时不结算（客户端仍会沿视线画出一道，见 tickingFlash）。
+        // 每道光柱沿自己的方向结算一遍。所有帽子天生 2 道：这两道叠在同一目标上**不打折**；
+        // 红帽附魔「光柱」多出来的道，敌人够多就一人一道，敌人不够时堆叠到已有目标上，
+        // 按 BEAM_STACK_FACTOR 边际递减。每道伤害再乘 BEAM_DAMAGE_SCALE（基础两道合计 = 原来一道）。
+        // 没有目标时不结算（客户端仍会沿视线画出这几道，见 tickingFlash）。
         int distinct = distinctTargets(targets);
         for (int i = 0; i < targets.size(); i++) {
-            int stack = distinct <= 0 ? 0 : i / distinct;
-            float factor = power * (float) Math.pow(BEAM_STACK_FACTOR, stack);
+            float factor = power * BEAM_DAMAGE_SCALE;
+            if (i >= BASE_BEAM_COUNT && distinct > 0) {
+                // 同一目标上第 m 道「附魔光柱」才打折；基础那几道永远满伤
+                int enchantStack = (i - BASE_BEAM_COUNT) / distinct;
+                factor *= (float) Math.pow(BEAM_STACK_FACTOR, enchantStack);
+            }
             float drained = damageOneBeam(level, wearer, hatType, source, flatDamage * factor, factor, targets.get(i));
             applyLifesteal(wearer, hat, drained);
         }

@@ -1,6 +1,7 @@
 package com.hatmod.client;
 
 import com.hatmod.HatAbilities;
+import com.hatmod.HatEnchants;
 import com.hatmod.HatItems;
 import com.hatmod.HatRouteState;
 import com.hatmod.HatType;
@@ -170,10 +171,12 @@ public final class BeamRenderer {
                 continue;
             }
 
-            // 红帽附魔「光柱」会同时打多道光柱：服务端把每道光锁定的目标 id 一起发来，
-            // 这里逐个画一条指过去。没有锁到敌人时列表为空，退化成「沿视线一道」。
+            // 所有帽子天生 2 道，红帽附魔「光柱」在此基础上每级再加 1 道。
+            // 服务端把每道光锁定的目标 id 一起发来，这里逐个画一条指过去；
+            // 没有锁到敌人时列表为空，仍按道数沿视线画出（不退化成一束）。
             int[] targetIds = BeamTargets.get(living.getId());
-            int beams = Math.max(1, targetIds.length);
+            int beams = HatAbilities.BASE_BEAM_COUNT
+                    + HatEnchants.conflagrationExtraBeams(HatAbilities.hatStack(living));
             // 光柱的淡色取自戴帽者身上那顶帽子（头盔槽或 Curios 饰品栏，客户端都会同步过来）；
             // 「全」取本轮路线的颜色，跟帽子变色保持一致。
             float[] tint = beamTintFor(living);

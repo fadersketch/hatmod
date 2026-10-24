@@ -213,16 +213,17 @@ public final class HatEnchants {
     }
 
     /**
-     * 「光柱」这次照射一共打几道光柱（基础 1 道 + 每级 1 道 → I/II/III = 2/3/4 道）。
+     * 「光柱」**额外**多给几道光柱（每级 +1 → I/II/III 级 = +1/+2/+3）。
      *
-     * <p>没附魔也返回 1 —— 光柱本身是红帽的固有手段，附魔只是让它多几道。
-     * 非红帽返回 1，调用方按 1 道处理即可。
+     * <p>基础道数不在这里：所有帽子天生 {@code HatAbilities.BASE_BEAM_COUNT} = 2 道，
+     * 附魔只是在这之上再加。所以 III 级一共 {@code 2 + 3 = 5} 道。
      *
      * <p>这是**上限**：实际发出几道还要看敌人有几个 —— 每道光各锁一个不同的敌人，
-     * 敌人不够就少发几道（见 {@code HatAbilities.beamTargets}）。
+     * 敌人不够时基础道可以无衰减叠在同一目标上，附魔道则按边际递减堆叠
+     * （见 {@code HatAbilities.beamTargets} / {@code HatAbilities.damageBeam}）。
      */
-    public static int conflagrationBeams(ItemStack hat) {
-        return 1 + level(hat, Kind.CONFLAGRATION) * CONFLAGRATION_BEAMS_PER_LEVEL;
+    public static int conflagrationExtraBeams(ItemStack hat) {
+        return level(hat, Kind.CONFLAGRATION) * CONFLAGRATION_BEAMS_PER_LEVEL;
     }
 
     /**
