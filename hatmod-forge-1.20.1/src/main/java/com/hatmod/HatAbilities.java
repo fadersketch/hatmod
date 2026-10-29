@@ -2039,7 +2039,7 @@ public final class HatAbilities {
     }
 
     /**
-     * 敌人 = 敌意生物 / 被激怒的中立生物 / 正在锁定戴帽者的生物 /
+     * 敌人 = 敌意生物 / 被激怒的中立生物 / 注册分类为 MONSTER 的生物 / 正在锁定戴帽者的生物 /
      * 最近真的打过戴帽者的生物（见 {@link #rememberAggressor}）。
      * 不含玩家和己方（避免误伤队友、宠物、自己的女仆）。
      */
@@ -2060,6 +2060,13 @@ public final class HatAbilities {
                 return true;
             }
             if (mob instanceof NeutralMob neutral && neutral.getRemainingPersistentAngerTime() > 0) {
+                return true;
+            }
+            // 兜底：注册分类就是 MONSTER 的一律算敌意。有些模组怪（诡厄巫法的「仆从」系列就是）
+            // 注册成 MONSTER、却**不实现 Enemy 接口**，平时也**不 setTarget**（索敌全在自己的 AI 里），
+            // 上面三条全都命中不了 —— 少了这一条，它们永远不会被链路当成敌人，
+            // 光柱不锁、负面场也不挂。
+            if (mob.getType().getCategory() == net.minecraft.world.entity.MobCategory.MONSTER) {
                 return true;
             }
             return mob.getTarget() == wearer;

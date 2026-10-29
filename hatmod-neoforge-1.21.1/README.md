@@ -230,12 +230,13 @@ D D D
 另外，**任何生物只要对戴帽者造成了大于 0 的伤害**，不管它离多远，都会立刻算成合法目标、
 把这一轮打起来 —— 远程偷袭不会再出现「挨了打帽子却没反应」。
 
-「合法目标」由 `HatAbilities.isEnemy` 一个函数说了算，**四类都算**：
+「合法目标」由 `HatAbilities.isEnemy` 一个函数说了算，**五类都算**：
 
 | 算合法目标 | 说明 |
 | --- | --- |
 | 敌意生物 | 僵尸、骷髅、苦力怕…（`Enemy`） |
 | **被激怒的中立生物** | 狼、羊驼、铁傀儡、蜜蜂、末影人、僵尸猪灵…只要怒气还没消（`NeutralMob#getRemainingPersistentAngerTime > 0`）就算，不需要它正在打你 |
+| **注册分类为 MONSTER 的生物** | 兜底：注册成 `MobCategory.MONSTER` 却不实现 `Enemy` 接口、也不 `setTarget` 的模组怪（诡厄巫法的「仆从」系列就是这样）也一律算敌人 |
 | 正在锁定戴帽者的生物 | 不看类型：`getTarget()` 指向戴帽者就算 |
 | **最近真的打过戴帽者的生物** | 兜底：对戴帽者造成了**大于 0 的伤害**之后，**30 秒**（`AGGRO_MEMORY_TICKS`）内一律算敌人，而且**不受 24 格射程限制** |
 
@@ -1079,7 +1080,7 @@ mod jar 的文件系统句柄。之后**第一次**用到某个类时，类加�
 gradle build
 ```
 
-产物：`build/libs/hatmod-neoforge-1.21.1-1.0.5.jar`，放进 `.minecraft/mods/`。
+产物：`build/libs/hatmod-neoforge-1.21.1-1.1.0.jar`，放进 `.minecraft/mods/`。
 （NeoForge 版本不需要额外前置模组。）
 
 > `libs/curios-neoforge-9.5.1+1.21.1-api.jar` 是**编译期**用的 Curios API（`compileOnly`，
@@ -1089,12 +1090,12 @@ gradle build
 
 ## Curios 饰品栏（可选）
 
-装了 Curios 时，四顶帽子**也能放进饰品栏的「head」槽**，效果和戴在头盔槽里完全一样：
+装了 Curios 时，五顶帽子**也能放进饰品栏的「head」槽**，效果和戴在头盔槽里完全一样：
 蓄力、照射、附魔、和平主义、音乐、光柱颜色都照常。**但不会再画在头上** —— 饰品栏的帽子纯功能，
 模型不渲染。
 
 - **能放进饰品栏**靠物品标签 `data/curios/tags/item/head.json`（1.20.1 是 `tags/items`，1.21 起改名），
-  里面列了四顶帽子。Curios 的 head 槽校验器 `curios:tag` 就是查这个标签，所以**不需要写注册代码**。
+  里面列了五顶帽子（含脑蚀）。Curios 的 head 槽校验器 `curios:tag` 就是查这个标签，所以**不需要写注册代码**。
 - **能生效**靠 `HatAbilities.hatStack()`：全模组「这生物戴着哪顶帽子」都走这一个入口 ——
   先看头盔槽，没有再看 Curios 饰品栏（两处都只看「是不是本模组的帽子」）。
 - **不渲染**是有意的：`client.CurioHatRenderer` 还留在源码里，但 `HatModClient.clientSetup`
@@ -1161,7 +1162,7 @@ src/main/resources/
   data/minecraft/tags/enchantment/non_treasure.json   9 个附魔并进 non_treasure（= 附魔台/宝箱/村民都能出）
   data/minecraft/tags/item/enchantable/{head_armor,durability,equippable}.json  能附所有头盔附魔
   data/minecraft/tags/damage_type/bypasses_{armor,cooldown,invulnerability}.json
-  data/curios/tags/item/head.json   把四顶帽子加进 Curios 的 head 槽标签（1.20.1 是 tags/items）
+  data/curios/tags/item/head.json   把五顶帽子加进 Curios 的 head 槽标签（1.20.1 是 tags/items）
   data/hatmod/recipe/*.json    合成表（1.21.1 是单数 recipe，1.20.1 是 recipes）
 
 tools/gen_textures.py        重新生成帽子、光柱与粒子贴图
