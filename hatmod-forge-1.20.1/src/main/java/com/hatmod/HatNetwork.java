@@ -39,7 +39,7 @@ public final class HatNetwork {
      * 所以这里从 {@code "1"} 提到 {@code "2"}：版本不一致时 Forge 直接拒绝连接，
      * 而不是让两边拿错值跑。以后只要改动任何包的字段布局，都要把它加一。
      */
-    private static final String PROTOCOL = "2";
+    private static final String PROTOCOL = "3";
 
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             HatMod.id("main"), () -> PROTOCOL, PROTOCOL::equals, PROTOCOL::equals);
@@ -69,12 +69,45 @@ public final class HatNetwork {
                 GreenHeartsMessage::encode, GreenHeartsMessage::decode, GreenHeartsMessage::handle);
         CHANNEL.registerMessage(6, RouteMessage.class,
                 RouteMessage::encode, RouteMessage::decode, RouteMessage::handle);
+        CHANNEL.registerMessage(7, BrainrotSpinMessage.class,
+                BrainrotSpinMessage::encode, BrainrotSpinMessage::decode, BrainrotSpinMessage::handle);
+        CHANNEL.registerMessage(8, BrainrotTextMessage.class,
+                BrainrotTextMessage::encode, BrainrotTextMessage::decode, BrainrotTextMessage::handle);
     }
 
     /** 通知客户端某个戴帽者「开始/停止照射」，以及它锁定了谁（每道光柱一个 id）。 */
     public static void sendBeamTarget(LivingEntity wearer, boolean beaming, int[] targetIds) {
+        sendBeamTarget(wearer, beaming, targetIds, 0);
+    }
+
+    /**
+     * 同上，但显式指定「画几道光柱」。{@code beamCount <= 0} 表示让客户端按帽子自己算。
+     */
+    public static void sendBeamTarget(LivingEntity wearer, boolean beaming, int[] targetIds, int beamCount) {
         CHANNEL.send(PacketDistributor.TRACKING_ENTITY_AND_SELF.with(() -> wearer),
-                new BeamTargetMessage(wearer.getId(), targetIds, beaming));
+                new BeamTargetMessage(wearer.getId(), targetIds, beaming, beamCount));
+    }
+
+    /** 「脑蚀」的旋转状态（只影响渲染，纯视觉）。 */
+    public static void sendBrainrotSpin(LivingEntity wearer, boolean spin) {
+        CHANNEL.send(PacketDistributor.TRACKING_ENTITY_AND_SELF.with(() -> wearer),
+                new BrainrotSpinMessage(wearer.getId(), spin));
+    }
+
+    /** 「脑蚀」的屏幕文字：只发给戴帽者自己。 */
+    public static void sendBrainrotText(ServerPlayer player) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new BrainrotTextMessage());
+    }
+
+    /** 只发给某一个玩家：某个实体此刻的自转状态（玩家刚进入视野时补发）。 */
+    public static void sendBrainrotSpinTo(ServerPlayer player, int wearerId, boolean spin) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new BrainrotSpinMessage(wearerId, spin));
+    }
+
+    /** 只发给某一个玩家：某戴帽者当前的光柱状态（玩家刚进入视野时补发）。 */
+    public static void sendBeamTargetTo(ServerPlayer player, LivingEntity wearer, int[] targetIds, int beamCount) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new BeamTargetMessage(wearer.getId(), targetIds, true, beamCount));
     }
 
     /**
@@ -217,16 +250,21 @@ public final class HatNetwork {
     }
 
     /**
-     * 一条光柱锁定信息：戴帽者、它锁定的目标 id 列表（每道光柱一个）、是否在照射。
+     * 一条光柱锁定信息：戴帽者、它锁定的目标 id 列表（每道光柱一个）、是否在照射，
+     * 以及**当前应该画几道**。
      *
      * <p>红帽附魔「光柱」会同时打多道光柱，所以目标是一个数组而不是单个 id：
      * 客户端按顺序给每道光柱画一条，指向各自的敌人。没有目标时是空数组。
+     *
+     * <p>{@code beamCount <= 0} 表示「按帽子算」（基础 2 道 + 附魔加成），这是老行为；
+     * 「脑蚀」的光柱道数会随时间变化（2 → 3 → 4），由服务端直接给数字。
      */
-    public record BeamTargetMessage(int wearerId, int[] targetIds, boolean beaming) {
+    public record BeamTargetMessage(int wearerId, int[] targetIds, boolean beaming, int beamCount) {
 
         public static void encode(BeamTargetMessage msg, FriendlyByteBuf buf) {
             buf.writeVarInt(msg.wearerId());
             buf.writeBoolean(msg.beaming());
+            buf.writeVarInt(msg.beamCount());
             int[] ids = msg.targetIds();
             buf.writeVarInt(ids.length);
             for (int id : ids) {
@@ -237,18 +275,59 @@ public final class HatNetwork {
         public static BeamTargetMessage decode(FriendlyByteBuf buf) {
             int wearerId = buf.readVarInt();
             boolean beaming = buf.readBoolean();
+            int beamCount = buf.readVarInt();
             int size = buf.readVarInt();
             int[] ids = new int[size];
             for (int i = 0; i < size; i++) {
                 ids[i] = buf.readVarInt();
             }
-            return new BeamTargetMessage(wearerId, ids, beaming);
+            return new BeamTargetMessage(wearerId, ids, beaming, beamCount);
         }
 
         public static void handle(BeamTargetMessage msg, Supplier<NetworkEvent.Context> ctx) {
             NetworkEvent.Context context = ctx.get();
             context.enqueueWork(() -> com.hatmod.client.BeamTargets.set(
-                    msg.wearerId(), msg.beaming(), msg.targetIds()));
+                    msg.wearerId(), msg.beaming(), msg.targetIds(), msg.beamCount()));
+            context.setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 「脑蚀」的原地自转状态（纯渲染）。
+     */
+    public record BrainrotSpinMessage(int wearerId, boolean spin) {
+
+        public static void encode(BrainrotSpinMessage msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.wearerId());
+            buf.writeBoolean(msg.spin());
+        }
+
+        public static BrainrotSpinMessage decode(FriendlyByteBuf buf) {
+            return new BrainrotSpinMessage(buf.readVarInt(), buf.readBoolean());
+        }
+
+        public static void handle(BrainrotSpinMessage msg, Supplier<NetworkEvent.Context> ctx) {
+            NetworkEvent.Context context = ctx.get();
+            context.enqueueWork(() -> com.hatmod.client.BrainrotSpin.set(msg.wearerId(), msg.spin()));
+            context.setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 「脑蚀」的屏幕文字（No too late）。没有字段。
+     */
+    public record BrainrotTextMessage() {
+
+        public static void encode(BrainrotTextMessage msg, FriendlyByteBuf buf) {
+        }
+
+        public static BrainrotTextMessage decode(FriendlyByteBuf buf) {
+            return new BrainrotTextMessage();
+        }
+
+        public static void handle(BrainrotTextMessage msg, Supplier<NetworkEvent.Context> ctx) {
+            NetworkEvent.Context context = ctx.get();
+            context.enqueueWork(() -> com.hatmod.client.BrainrotText.show());
             context.setPacketHandled(true);
         }
     }

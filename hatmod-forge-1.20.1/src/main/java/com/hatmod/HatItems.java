@@ -40,12 +40,42 @@ public final class HatItems {
     /** 创造模式专属的调参器：没有合成表，只能从创造物品栏里拿。 */
     public static final RegistryObject<Item> TUNER = ITEMS.register("tuner", HatTunerItem::new);
 
+    /**
+     * 「神秘红毛钻头」：脑蚀的**中间产物**，没有自己的机制，纯粹是价格的一环。
+     *
+     * <p>四个摆成帽子形状才是脑蚀 —— 也就是说一顶脑蚀 = 四份「皮革 + 回响碎片 + 下界之星 +
+     * 幽匿催发体」。它不是帽子：{@link #isHat} 里不能放行它，否则戴上它会顶掉真正的帽子。
+     */
+    public static final RegistryObject<Item> MYSTERIOUS_DRILL =
+            ITEMS.register("mysterious_drill", () -> new Item(new Item.Properties()));
+
+    /**
+     * 「后室 Teto」的刷怪蛋：只放在创造物品栏里。
+     *
+     * <p>放出来的那只是**没有主人**的 —— {@link Teto#tick()} 会认最近 32 格内的玩家当主人，
+     * 然后一直绕着它转（不要求戴着脑蚀、也不随曲子消失）；主人死亡或它被打死才会散。
+     */
+    public static final RegistryObject<Item> TETO_SPAWN_EGG =
+            ITEMS.<Item>register("backrooms_teto_spawn_egg",
+                    () -> new net.minecraftforge.common.ForgeSpawnEggItem(
+                            HatSummons.TETO::get, 0x2B0B18, 0xD8323C, new Item.Properties()));
+
+    /**
+     * 「脑蚀」：形状和建模同黑帽（材质/贴图直接复用黑帽那张），
+     * 但它走自己那套完全独立的时间线（{@link BrainrotCycle}），不参与三帽/「全」的路线系统。
+     */
+    public static final RegistryObject<Item> BRAIN_HAT = create("brain_hat", "brain_hat");
+
     private HatItems() {
     }
 
     private static RegistryObject<Item> create(String colorName) {
-        ArmorMaterial material = new HatArmorMaterial(colorName);
-        return ITEMS.register(colorName, () -> new ArmorItem(
+        return create(colorName, colorName);
+    }
+
+    private static RegistryObject<Item> create(String itemName, String textureName) {
+        ArmorMaterial material = new HatArmorMaterial(textureName);
+        return ITEMS.register(itemName, () -> new ArmorItem(
                 material,
                 ArmorItem.Type.HELMET,
                 new Item.Properties().durability(HatDurability.MAX_DAMAGE)
@@ -123,8 +153,15 @@ public final class HatItems {
             @Override
             public void appendHoverText(ItemStack stack, Level level,
                                         List<Component> tooltip, TooltipFlag flag) {
-                // 标语：「全」用专属的「新神已至」，三顶原色帽是「神本无相」
-                if (this == ALL_HAT.get()) {
+                // 标语：「全」用专属的「新神已至」，三顶原色帽是「神本无相」；
+                // 脑蚀不摆那句，改标它这一整轮用的 BGM
+                if (this == BRAIN_HAT.get()) {
+                    tooltip.add(Component.translatable("item.hatmod.brain_hat.desc")
+                            .withStyle(ChatFormatting.LIGHT_PURPLE, ChatFormatting.ITALIC));
+                    // 曲子来源写在提示里：整轮剧本就是照着这首曲子排的
+                    tooltip.add(Component.translatable("item.hatmod.brain_hat.credit")
+                            .withStyle(ChatFormatting.DARK_GRAY));
+                } else if (this == ALL_HAT.get()) {
                     tooltip.add(Component.translatable("item.hatmod.all_hat.tagline")
                             .withStyle(ChatFormatting.GOLD, ChatFormatting.ITALIC));
                     // 「全」再补一行说明它到底「全」在哪：三顶合一 + 全专属附魔 + 自带光效
@@ -161,8 +198,14 @@ public final class HatItems {
         return null;
     }
 
+    /**
+     * 头上戴的是不是本模组的帽子。
+     *
+     * <p>「脑蚀」不在 {@link #typeOf} 的四条路线里（它走自己的剧本），但它**也是帽子** ——
+     * 少了这个分支，{@code HatAbilities.hatStack} 会把脑蚀当成普通头盔，整条脑蚀循环都起不来。
+     */
     public static boolean isHat(ItemStack stack) {
-        return typeOf(stack) != null;
+        return typeOf(stack) != null || stack.is(BRAIN_HAT.get());
     }
 
     public static void register(IEventBus modBus) {

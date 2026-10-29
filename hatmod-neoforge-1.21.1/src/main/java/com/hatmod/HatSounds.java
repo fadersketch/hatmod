@@ -23,6 +23,8 @@ public final class HatSounds {
     public static final DeferredHolder<SoundEvent, SoundEvent> BLACK_MUSIC = register("music_black");
     public static final DeferredHolder<SoundEvent, SoundEvent> WHITE_MUSIC = register("music_white");
     public static final DeferredHolder<SoundEvent, SoundEvent> RED_MUSIC = register("music_red");
+    /** 「脑蚀」帽子专用曲：MONTAGEM ALQUIMIA。 */
+    public static final DeferredHolder<SoundEvent, SoundEvent> BRAINROT_MUSIC = register("music_brainrot");
 
     private HatSounds() {
     }
@@ -46,6 +48,20 @@ public final class HatSounds {
             return WHITE_MUSIC.get();
         }
         return RED_MUSIC.get();
+    }
+
+    /**
+     * 网络包里的「曲子序号」→ 实际曲目。
+     *
+     * <p>0/1/2 是黑/白/红三条路线；{@link HatMusic#BRAINROT_ORDINAL} 是「脑蚀」的专用曲。
+     * 「全」的 ordinal 3 从不作为音乐发出来（它每轮已经换成具体路线），所以 3 让给脑蚀。
+     */
+    public static SoundEvent forOrdinal(int ordinal) {
+        if (ordinal == HatMusic.BRAINROT_ORDINAL) {
+            return BRAINROT_MUSIC.get();
+        }
+        HatType[] types = HatType.values();
+        return forType(types[ordinal >= 0 && ordinal < types.length ? ordinal : 0]);
     }
 
     public static void register(IEventBus modBus) {

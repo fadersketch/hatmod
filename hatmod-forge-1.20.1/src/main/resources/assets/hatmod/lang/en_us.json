@@ -1,9 +1,16 @@
 {
+  "item.hatmod.brain_hat": "Brainrot X MONTAGEM ALQUIMIA",
+  "item.hatmod.brain_hat.desc": "BGM: Brainrot and MONTAGEM ALQUIMIA",
+  "item.hatmod.brain_hat.credit": "Music: 我叫小白李 on Bilibili",
+  "item.hatmod.mysterious_drill": "Mysterious Red-Haired Drill",
+  "message.hatmod.shade": "A shade took the blow for you",
+  "entity.hatmod.hat_summon": "Phantom Shade",
+  "entity.hatmod.backrooms_teto": "Backrooms Teto",
   "item.hatmod.black_hat": "God's Cowboy Hat (Black)",
   "item.hatmod.white_hat": "God's Cowboy Hat (White)",
   "item.hatmod.red_hat": "God's Cowboy Hat (Red)",
   "item.hatmod.all_hat": "God's Cowboy Hat (All)",
-  "item.hatmod.all_hat.desc": "All three in one · every exclusive enchantment · innate glint",
+  "item.hatmod.all_hat.desc": "All three in one · every exclusive enchantment · innate glint · summons 4 taunting shades that can take a hit for you",
   "item.hatmod.hat.desc": "The Divine Has No Fixed Form",
   "item.hatmod.hat.durability": "Durability %s · at most 1 wear per %s s · 1 Leather repairs %s",
   "item.hatmod.tuner": "God's Tuner",
@@ -59,5 +66,6 @@
   "hatmod.tuner.route.white": "White route dmg",
   "hatmod.tuner.route.red": "Red route dmg",
   "hatmod.tuner.route.random": "Random",
-  "hatmod.tuner.forcedRoute": "Force route"
+  "hatmod.tuner.forcedRoute": "Force route",
+  "item.hatmod.backrooms_teto_spawn_egg": "Backrooms Teto Spawn Egg"
 }

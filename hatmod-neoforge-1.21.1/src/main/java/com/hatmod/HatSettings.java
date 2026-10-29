@@ -54,7 +54,7 @@ public final class HatSettings {
      * <p>只增不减，纯粹用来让旧 config 失效；每一版具体改了什么不在这里逐个记，
      * 看 {@link HatType} 顶部那段「当前开火点 / 一轮总长」。
      */
-    public static final int CONFIG_VERSION = 6;
+    public static final int CONFIG_VERSION = 7;
 
     /** 光柱每刻额外造成「目标当前生命 × 这个比例」的伤害。 */
     public static final float DEFAULT_HEALTH_DAMAGE_RATIO = 0.05F;

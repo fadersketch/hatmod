@@ -1,0 +1,14 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "equipment",
+  "pattern": [
+    " D ",
+    "DDD"
+  ],
+  "key": {
+    "D": { "item": "hatmod:mysterious_drill" }
+  },
+  "result": {
+    "item": "hatmod:brain_hat"
+  }
+}

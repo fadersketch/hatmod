@@ -16,6 +16,8 @@ public final class HatPreloader {
 
     /** 双端都存在的类。 */
     private static final String[] COMMON = {
+            "com.hatmod.BrainrotCycle",
+            "com.hatmod.BrainrotMinions",
             "com.hatmod.HatAbilities",
             "com.hatmod.HatAbilities$Hold",
             "com.hatmod.HatCommand",
@@ -54,14 +56,20 @@ public final class HatPreloader {
             "com.hatmod.HatSounds",
             "com.hatmod.HatSounds$1",
             "com.hatmod.HatState",
+            "com.hatmod.HatSummon",
+            "com.hatmod.HatSummons",
             "com.hatmod.HatTunerItem",
             "com.hatmod.HatType",
             "com.hatmod.HatType$Trait",
+            "com.hatmod.Teto",
     };
 
     /** 只在客户端存在的类（渲染、模型、粒子、客户端事件）。 */
     private static final String[] CLIENT = {
             "com.hatmod.client.BeamRenderer",
+            "com.hatmod.client.BrainHatFaceLayer",
+            "com.hatmod.client.BrainrotSpin",
+            "com.hatmod.client.BrainrotText",
             "com.hatmod.client.BeamRenderTypes",
             "com.hatmod.client.BeamTargets",
             "com.hatmod.client.ClientHatSettings",
@@ -77,6 +85,9 @@ public final class HatPreloader {
             "com.hatmod.client.HatMusicInstance",
             "com.hatmod.client.HatMusicPlayer",
             "com.hatmod.client.HatMusicPlayer$Track",
+            "com.hatmod.client.HatSummonRenderer",
+            "com.hatmod.client.TetoRenderer",
+            "com.hatmod.client.ShadeHatLayer",
             "com.hatmod.client.HatTexturePreloader",
             "com.hatmod.client.HatTexturePreloader$1",
             "com.hatmod.client.HatTunerScreen",

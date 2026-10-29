@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "equipment",
+  "pattern": [
+    "LEL",
+    "EDN",
+    "NSN"
+  ],
+  "key": {
+    "L": { "item": "minecraft:leather" },
+    "E": { "item": "minecraft:echo_shard" },
+    "D": { "item": "minecraft:black_dye" },
+    "N": { "item": "minecraft:nether_star" },
+    "S": { "item": "minecraft:sculk_catalyst" }
+  },
+  "result": {
+    "id": "hatmod:mysterious_drill",
+    "count": 1
+  }
+}

@@ -1,9 +1,16 @@
 {
+  "item.hatmod.brain_hat": "脑蚀 X MONTAGEM ALQUIMIA",
+  "item.hatmod.brain_hat.desc": "BGM：脑蚀 and MONTAGEM ALQUIMIA",
+  "item.hatmod.brain_hat.credit": "曲源：B站 UP主 我叫小白李",
+  "item.hatmod.mysterious_drill": "神秘红毛钻头",
+  "message.hatmod.shade": "虚影替你挡下了这一击",
+  "entity.hatmod.hat_summon": "虚影",
+  "entity.hatmod.backrooms_teto": "后室 Teto",
   "item.hatmod.black_hat": "神之牛仔帽（黑）",
   "item.hatmod.white_hat": "神之牛仔帽（白）",
   "item.hatmod.red_hat": "神之牛仔帽（红）",
   "item.hatmod.all_hat": "神之牛仔帽（全）",
-  "item.hatmod.all_hat.desc": "三顶合一 · 兼容全部专属附魔 · 自带光辉",
+  "item.hatmod.all_hat.desc": "三顶合一 · 兼容全部专属附魔 · 自带光辉 · 蓄力完成时召唤 4 个虚影（嘲讽·替你挡刀）",
   "item.hatmod.hat.desc": "神本无相",
   "item.hatmod.hat.durability": "耐久 %s · 每 %s 秒最多磨损 1 点 · 1 个皮革修复 %s 点",
   "item.hatmod.tuner": "神的调参器",
@@ -59,5 +66,6 @@
   "hatmod.tuner.route.white": "白路线帧伤",
   "hatmod.tuner.route.red": "红路线帧伤",
   "hatmod.tuner.route.random": "随机",
-  "hatmod.tuner.forcedRoute": "强制路线"
+  "hatmod.tuner.forcedRoute": "强制路线",
+  "item.hatmod.backrooms_teto_spawn_egg": "后室 Teto 刷怪蛋"
 }

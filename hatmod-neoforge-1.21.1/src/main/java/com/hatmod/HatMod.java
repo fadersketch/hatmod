@@ -18,6 +18,7 @@ public class HatMod {
     /** NeoForge 会把 mod 事件总线直接注入构造器（FMLJavaModLoadingContext 已移除）。 */
     public HatMod(IEventBus modBus) {
         HatItems.register(modBus);
+        HatSummons.register(modBus);
         HatEffects.register(modBus);
         HatParticles.register(modBus);
         HatRecipes.register(modBus);

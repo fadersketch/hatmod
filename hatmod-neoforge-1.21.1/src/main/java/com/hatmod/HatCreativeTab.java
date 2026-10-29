@@ -19,6 +19,9 @@ public final class HatCreativeTab {
             event.accept(HatItems.WHITE_HAT.get());
             event.accept(HatItems.RED_HAT.get());
             event.accept(HatItems.ALL_HAT.get());
+            event.accept(HatItems.MYSTERIOUS_DRILL.get());
+            event.accept(HatItems.BRAIN_HAT.get());
+            event.accept(HatItems.TETO_SPAWN_EGG.get());
             event.accept(HatItems.TUNER.get());
         }
     }

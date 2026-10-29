@@ -12,10 +12,15 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.RenderLevelStageEvent;
@@ -26,7 +31,9 @@ import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 绘制"手电筒"光锥。
@@ -114,6 +121,8 @@ public final class BeamRenderer {
     private static final float[] TINT_BLACK = {0.92F, 0.94F, 1.10F};
     private static final float[] TINT_WHITE = {1.00F, 1.00F, 1.00F};
     private static final float[] TINT_RED = {1.10F, 0.95F, 0.90F};
+    /** 「脑蚀」：偏紫，和它那套阴森的氛围配套。 */
+    private static final float[] TINT_BRAINROT = {0.82F, 0.48F, 1.10F};
     /** 「全」：三色合一，取偏暖金的一档，一眼和另外三顶区分开。 */
     private static final float[] TINT_ALL = {1.08F, 1.02F, 0.86F};
 
@@ -139,7 +148,12 @@ public final class BeamRenderer {
      * 这样帽子变色时光柱也跟着变（客户端记的路线见 {@link HatRouteState}）。
      */
     private static float[] beamTintFor(LivingEntity living) {
-        HatType own = HatItems.typeOf(HatAbilities.hatStack(living));
+        net.minecraft.world.item.ItemStack hat = HatAbilities.hatStack(living);
+        // 「脑蚀」不是 HatType 里的任何一顶（它走自己的时间线），单独给它一个紫色
+        if (hat.is(com.hatmod.HatItems.BRAIN_HAT.get())) {
+            return TINT_BRAINROT;
+        }
+        HatType own = HatItems.typeOf(hat);
         if (own == HatType.ALL) {
             return beamTint(HatRouteState.routeOf(living.getId(), HatType.ALL));
         }
@@ -185,8 +199,12 @@ public final class BeamRenderer {
             // 服务端把每道光锁定的目标 id 一起发来，这里逐个画一条指过去；
             // 没有锁到敌人时列表为空，仍按道数沿视线画出（不退化成一束）。
             int[] targetIds = BeamTargets.get(living.getId());
-            int beams = HatAbilities.BASE_BEAM_COUNT
-                    + HatEnchants.conflagrationExtraBeams(HatAbilities.hatStack(living));
+            // 「脑蚀」由服务端直接给道数；其余帽子按基础 2 道 + 附魔加成算
+            int beams = BeamTargets.count(living.getId());
+            if (beams <= 0) {
+                beams = HatAbilities.BASE_BEAM_COUNT
+                        + HatEnchants.conflagrationExtraBeams(HatAbilities.hatStack(living));
+            }
             if (feedbackTargets != null) {
                 for (int id : targetIds) {
                     Entity hit = mc.level.getEntity(id);
@@ -264,12 +282,21 @@ public final class BeamRenderer {
     /** 上一次补命中特效的客户端刻；渲染是每帧的，用它把特效压到每刻一次。 */
     private static long lastFeedbackTick = Long.MIN_VALUE;
 
+    /** 受击音效节流：同一目标至少隔 4 刻，全局任意时刻至少隔 2 刻，免得一道光柱变成机关枪。 */
+    private static final int HIT_SOUND_TARGET_INTERVAL = 4;
+    private static final int HIT_SOUND_GLOBAL_INTERVAL = 2;
+    private static final Map<Integer, Long> hitSoundTicks = new HashMap<>();
+    private static long lastHitSoundTick = -1000L;
+    private static Level soundLevel;
+
     /**
      * 光柱命中目标的**每刻**反馈。
      *
      * <p>原版受击动画（红闪 + 轻微仰头）只在真正结算伤害的那一刻播一次，还有节流；
-     * 光柱虽然每刻都在扣血，看起来却像隔几秒才挨一下。这里每客户端刻在目标身上补一小簇
-     * 红色「受伤」碎片和火星，并把受击闪烁续到下一刻，把「每刻都在挨打」表现出来。
+     * 光柱虽然每刻都在扣血，看起来却像隔几秒才挨一下。这里每客户端刻在目标身上炸开一蓬
+     * 红色「受伤」碎片和黄色暴击星光、全身铺满光柱火星，每 8 刻一圈向外扩散的亮环、
+     * 每 10 刻一次雷电白闪，把受击闪烁续到下一刻，并补上节流后的受击音效，
+     * 把「每刻都在挨打」表现出来。
      *
      * <p>全部在客户端生成、不发包：每个观察者各自看到，服务端零负担。
      */
@@ -280,25 +307,93 @@ public final class BeamRenderer {
         RandomSource random = mc.level.random;
         double halfWidth = target.getBbWidth() * 0.8D;
         double height = target.getBbHeight();
-        // 红色「受伤」碎片：最直观的「一直在掉血」
-        for (int i = 0; i < 3; i++) {
+        // 红色「受伤」碎片：DAMAGE_INDICATOR 走 CritParticle，传入速度 ×0.4、y 方向强制 +1.0，
+        // 寿命固定 20 刻——外扩速度要给大一点才看得见
+        for (int i = 0; i < 6; i++) {
             double x = target.getX() + (random.nextDouble() - 0.5D) * halfWidth;
-            double y = target.getY() + height * (0.30D + random.nextDouble() * 0.5D);
+            double y = target.getY() + height * (0.25D + random.nextDouble() * 0.6D);
             double z = target.getZ() + (random.nextDouble() - 0.5D) * halfWidth;
-            mc.level.addParticle(ParticleTypes.DAMAGE_INDICATOR, x, y, z, 0.0D, 0.02D, 0.0D);
+            double angle = random.nextDouble() * Math.PI * 2.0D;
+            double speed = 0.4D + random.nextDouble() * 0.4D;
+            mc.level.addParticle(ParticleTypes.DAMAGE_INDICATOR, x, y, z,
+                    Math.cos(angle) * speed, 0.15D + random.nextDouble() * 0.2D, Math.sin(angle) * speed);
         }
-        // 光柱同款亮芯火星，让命中点和光柱连成一体
-        for (int i = 0; i < 2; i++) {
+        // 黄色暴击星光（CRIT）：原版箭矢命中同款，四向飞散，最直接的「挨打」观感
+        for (int i = 0; i < 4; i++) {
             double x = target.getX() + (random.nextDouble() - 0.5D) * halfWidth;
-            double y = target.getY() + height * (0.30D + random.nextDouble() * 0.5D);
+            double y = target.getY() + height * (0.25D + random.nextDouble() * 0.6D);
+            double z = target.getZ() + (random.nextDouble() - 0.5D) * halfWidth;
+            double angle = random.nextDouble() * Math.PI * 2.0D;
+            double speed = 0.5D + random.nextDouble() * 0.5D;
+            mc.level.addParticle(ParticleTypes.CRIT, x, y, z,
+                    Math.cos(angle) * speed, 0.2D + random.nextDouble() * 0.3D, Math.sin(angle) * speed);
+        }
+        // 光柱同款亮芯火星：从脚到头铺满，让目标整个「烧」起来
+        for (int i = 0; i < 5; i++) {
+            double x = target.getX() + (random.nextDouble() - 0.5D) * halfWidth;
+            double y = target.getY() + height * random.nextDouble();
             double z = target.getZ() + (random.nextDouble() - 0.5D) * halfWidth;
             mc.level.addParticle(HatParticles.FLASH_LIGHT.get(), x, y, z,
-                    (random.nextDouble() - 0.5D) * 0.08D,
-                    (random.nextDouble() - 0.5D) * 0.08D,
-                    (random.nextDouble() - 0.5D) * 0.08D);
+                    (random.nextDouble() - 0.5D) * 0.12D,
+                    0.08D + random.nextDouble() * 0.12D,
+                    (random.nextDouble() - 0.5D) * 0.12D);
+        }
+        long tick = mc.level.getGameTime();
+        // 每 8 刻一圈向外扩散的亮环，不同目标错开相位：多目标、远距离时也能一眼看出「在被照」
+        if (tick % 8 == target.getId() % 8) {
+            for (int i = 0; i < 12; i++) {
+                double angle = Math.PI * 2.0D * i / 12.0D + random.nextDouble() * 0.2D;
+                double x = target.getX() + Math.cos(angle) * halfWidth * 0.7D;
+                double y = target.getY() + height * (0.3D + random.nextDouble() * 0.4D);
+                double z = target.getZ() + Math.sin(angle) * halfWidth * 0.7D;
+                mc.level.addParticle(HatParticles.FLASH_LIGHT.get(), x, y, z,
+                        Math.cos(angle) * 0.3D, 0.05D, Math.sin(angle) * 0.3D);
+            }
+        }
+        // 每 10 刻一次白色闪光（原版雷电同款的大亮块）：隔着老远都看得见
+        if (tick % 10 == target.getId() % 10) {
+            mc.level.addParticle(ParticleTypes.FLASH,
+                    target.getX(), target.getY() + height * 0.6D, target.getZ(), 0.0D, 0.0D, 0.0D);
         }
         // 受击闪烁续到下一刻：原版只在结算伤害时播，这里手动补上每刻的红闪
         target.hurtTime = target.hurtDuration = 10;
+        playHitSound(mc, target);
+    }
+
+    /**
+     * 光柱命中的受击音效。
+     *
+     * <p>原版受击音同样只在结算伤害时响一次，光柱听起来还是「隔几秒挨一下」。这里补上声音，
+     * 但必须节流：每刻都响的话，一道光柱就是机关枪，多目标时更是噪音。所以同一目标至少隔
+     * 4 刻（每秒约 5 声），全局任意 2 刻内最多一声，再压低音量、音高随机浮动，
+     * 听感是连续的挨打声而不是连续重击。
+     *
+     * <p>音效同样只在客户端播放，不发包。
+     */
+    private static void playHitSound(Minecraft mc, LivingEntity target) {
+        long now = mc.level.getGameTime();
+        if (soundLevel != mc.level) {
+            // 换维度/读档后刻数会归零，旧的刻记录会让差值变成负数，必须整体清掉
+            soundLevel = mc.level;
+            hitSoundTicks.clear();
+            lastHitSoundTick = -1000L;
+        }
+        Long targetLast = hitSoundTicks.get(target.getId());
+        if (targetLast != null && now - targetLast < HIT_SOUND_TARGET_INTERVAL) {
+            return;
+        }
+        if (now - lastHitSoundTick < HIT_SOUND_GLOBAL_INTERVAL) {
+            return;
+        }
+        lastHitSoundTick = now;
+        if (hitSoundTicks.size() > 128) {
+            hitSoundTicks.clear();
+        }
+        hitSoundTicks.put(target.getId(), now);
+        SoundEvent sound = target instanceof Player ? SoundEvents.PLAYER_HURT : SoundEvents.GENERIC_HURT;
+        float pitch = 0.85F + mc.level.random.nextFloat() * 0.3F;
+        mc.level.playLocalSound(target.getX(), target.getY() + target.getBbHeight() * 0.5D, target.getZ(),
+                sound, SoundSource.NEUTRAL, 0.6F, pitch, false);
     }
 
     /**

@@ -36,13 +36,37 @@ public final class HatMusic {
     private HatMusic() {
     }
 
+    /**
+     * 「脑蚀」的曲子在这条协议里占的序号。
+     *
+     * <p>序号本来对应 {@code HatType} 的 ordinal（0/1/2 是黑/白/红，3 是「全」）。
+     * 「全」从来不会把自己的 ordinal 当音乐发出去（它每轮已经换成具体路线），
+     * 所以 3 空着，直接让给脑蚀的专用曲。
+     */
+    public static final int BRAINROT_ORDINAL = 3;
+
     public static void play(ServerLevel level, LivingEntity wearer, HatType type) {
-        notify(level, wearer, type, true);
+        if (type == null) {
+            return;
+        }
+        notify(level, wearer, type.ordinal(), true);
     }
 
     /** 半路摘帽子 / 死亡 / 换帽子 / 照完没敌人时把还在响的那首掐掉，免得一直放到曲终。 */
     public static void stop(ServerLevel level, LivingEntity wearer, HatType type) {
-        notify(level, wearer, type, false);
+        if (type == null) {
+            return;
+        }
+        notify(level, wearer, type.ordinal(), false);
+    }
+
+    /** 「脑蚀」一轮开始：播它的专用曲（MONTAGEM ALQUIMIA）。 */
+    public static void playBrainrot(ServerLevel level, LivingEntity wearer) {
+        notify(level, wearer, BRAINROT_ORDINAL, true);
+    }
+
+    public static void stopBrainrot(ServerLevel level, LivingEntity wearer) {
+        notify(level, wearer, BRAINROT_ORDINAL, false);
     }
 
     /**
@@ -50,13 +74,9 @@ public final class HatMusic {
      *
      * <p>范围判断和原来一致：戴帽者自己 + 48 格内的玩家。
      */
-    private static void notify(ServerLevel level, LivingEntity wearer, HatType type, boolean playing) {
-        if (type == null) {
-            return;
-        }
+    private static void notify(ServerLevel level, LivingEntity wearer, int ordinal, boolean playing) {
         double radiusSq = HEAR_RADIUS * HEAR_RADIUS;
         int wearerId = wearer.getId();
-        int ordinal = type.ordinal();
         for (ServerPlayer player : level.players()) {
             if (player == wearer || player.distanceToSqr(wearer) <= radiusSq) {
                 HatNetwork.sendMusic(player, wearerId, ordinal, playing);

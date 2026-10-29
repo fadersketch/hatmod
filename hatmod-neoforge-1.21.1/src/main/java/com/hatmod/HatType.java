@@ -5,7 +5,7 @@ package com.hatmod;
  *
  * <p>数值单位都是「刻」（1 秒 = 20 刻），想微调直接改这里的常量即可。
  *
- * <p>这里的 {@code damagePerTick} 是**三顶帽子统一的默认值 10**：光柱真正的压力来自
+ * <p>这里的 {@code damagePerTick} 是**三顶帽子统一的默认值 1.0**（原来 10，整体砍到十分之一）：光柱真正的压力来自
  * 「每刻扣目标当前生命的 {@link HatSettings#DEFAULT_HEALTH_DAMAGE_RATIO}（5%）」那一部分，
  * 固定值只是收尾。光柱改成单体、又砍掉「蓄力期禁攻击」之后，战斗力下滑明显，
  * 所以把固定值从黑 1 / 白 2 / 红 3 统一抬到 10 补回来。想要更高就用创造模式的调参器改，会写进
@@ -42,9 +42,9 @@ package com.hatmod;
  * 见 {@link HatEnchants}。其中「全」对所有 9 个专属附魔都开放。
  */
 public enum HatType {
-    BLACK("black_hat", 440, 160, 10.0F, Trait.BLINK),
-    WHITE("white_hat", 364, 129, 10.0F, Trait.PERMANENT_BUFFS),
-    RED("red_hat", 588, 152, 10.0F, Trait.STRENGTH),
+    BLACK("black_hat", 440, 160, 1.0F, Trait.BLINK),
+    WHITE("white_hat", 364, 129, 1.0F, Trait.PERMANENT_BUFFS),
+    RED("red_hat", 588, 152, 1.0F, Trait.STRENGTH),
     /**
      * 「神之牛仔帽（全）」：把三顶帽子在工作台合到一起得到。
      *
@@ -60,7 +60,7 @@ public enum HatType {
      * 追加在枚举**最后**：{@link #ordinal()} 会随网络包一起发出去，插在中间会让老存档/老客户端
      * 认错帽子。
      */
-    ALL("all_hat", 588, 152, 15.0F, Trait.BLINK, Trait.STRENGTH, Trait.PERMANENT_BUFFS);
+    ALL("all_hat", 588, 152, 1.5F, Trait.BLINK, Trait.STRENGTH, Trait.PERMANENT_BUFFS);
 
     /** 每顶帽子除了数值之外独有的效果。「全」可以同时拥有多个。 */
     public enum Trait {
@@ -75,8 +75,8 @@ public enum HatType {
     /**
      * 「全」每轮随机取一条路线时，三条路线各自的**光柱帧伤**。
      *
-     * <p>只给「全」用，出厂值黑 12 / 白 10 / 红 15；三顶原色帽本身仍是各自的
-     * {@link #damagePerTick}（统一 10，可用调参器改），不受这里影响。
+     * <p>只给「全」用，出厂值黑 1.2 / 白 1.0 / 红 1.5；三顶原色帽本身仍是各自的
+     * {@link #damagePerTick}（统一 1.0，可用调参器改），不受这里影响。
      *
      * <p>实际数值现在由 {@link HatSettings#routeDamage} 提供（可在调参器「全帽」页或
      * {@code /hatmod routedamage} 改、落盘到 {@code config/hatmod.json}）。这个方法保留为
@@ -87,13 +87,13 @@ public enum HatType {
      */
     public static float routeDamage(HatType route) {
         if (route == BLACK) {
-            return 12.0F;
+            return 1.2F;
         }
         if (route == RED) {
-            return 15.0F;
+            return 1.5F;
         }
-        // 白（以及任何意外的入参）走 10
-        return 10.0F;
+        // 白（以及任何意外的入参）走 1.0
+        return 1.0F;
     }
 
     /**

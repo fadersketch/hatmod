@@ -29,20 +29,40 @@ public final class BeamTargets {
      */
     private static final Map<Integer, int[]> BEAMS = new HashMap<>();
 
+    /**
+     * 戴帽者实体 id -> 服务端指定「画几道」。
+     *
+     * <p>只有「脑蚀」会用到（它的道数随曲子进度 2 → 3 → 4 变化）。没有记录时按帽子自己算
+     * （基础 2 道 + 附魔加成），也就是老行为。
+     */
+    private static final Map<Integer, Integer> COUNTS = new HashMap<>();
+
     private BeamTargets() {
     }
 
-    public static void set(int wearerId, boolean beaming, int[] targetIds) {
+    public static void set(int wearerId, boolean beaming, int[] targetIds, int beamCount) {
         if (beaming) {
             BEAMS.put(wearerId, targetIds == null ? new int[0] : targetIds);
+            if (beamCount > 0) {
+                COUNTS.put(wearerId, beamCount);
+            } else {
+                COUNTS.remove(wearerId);
+            }
         } else {
             BEAMS.remove(wearerId);
+            COUNTS.remove(wearerId);
         }
     }
 
     /** 这个戴帽者现在是不是在照射。 */
     public static boolean isBeaming(int wearerId) {
         return BEAMS.containsKey(wearerId);
+    }
+
+    /** 服务端指定要画的道数；{@code <= 0} 表示按帽子自己算。 */
+    public static int count(int wearerId) {
+        Integer count = COUNTS.get(wearerId);
+        return count == null ? 0 : count;
     }
 
     /** 它锁定的目标 id 列表（每道光柱一个）；没有目标时是空数组。 */
@@ -56,6 +76,7 @@ public final class BeamTargets {
     /** 实体移除时清掉，免得实体 id 被复用后画出一条幽灵光柱。 */
     public static void clear(int wearerId) {
         BEAMS.remove(wearerId);
+        COUNTS.remove(wearerId);
     }
 
     /**

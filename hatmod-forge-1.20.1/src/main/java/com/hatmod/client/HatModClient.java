@@ -2,6 +2,7 @@ package com.hatmod.client;
 
 import com.hatmod.HatMod;
 import com.hatmod.HatParticles;
+import net.minecraft.client.renderer.entity.player.PlayerRenderer;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.EntityRenderersEvent;
 import net.minecraftforge.client.event.RegisterGuiOverlaysEvent;
@@ -27,20 +28,26 @@ public final class HatModClient {
         event.registerLayerDefinition(CowboyHatModel.LAYER, CowboyHatModel::createBodyLayer);
     }
 
+    @SubscribeEvent
+    public static void registerRenderers(EntityRenderersEvent.RegisterRenderers event) {
+        // 「全」帽的临时分身：用玩家模型 + 召唤者的皮肤来画
+        event.registerEntityRenderer(com.hatmod.HatSummons.SUMMON.get(), HatSummonRenderer::new);
+        // 「脑蚀」一轮里的后室 Teto：序列帧平面贴图
+        event.registerEntityRenderer(com.hatmod.HatSummons.TETO.get(), TetoRenderer::new);
+    }
+
     /**
-     * 装了 Curios 就把三顶帽子登记给它的渲染器 —— 这样放进饰品栏「head」槽的帽子
-     * 也会画在头上（见 {@link CurioHatRenderer}）。
+     * 饰品栏里的帽子**不渲染**。
      *
-     * <p>{@link CurioHatRenderer} 整个类都引用 Curios 的 API，所以进来之前必须先问
-     * {@code isLoaded}：没装 Curios 时这个类不会被加载，也就不会 NoClassDefFoundError。
-     * 能放进饰品栏靠的是物品标签 {@code curios:head}，跟这里无关 —— 没装 Curios 时
-     * 那个标签只是没人查。
+     * <p>放进 Curios「head」槽的帽子仍然有全部功能（{@code HatAbilities.hatStack} 会读它），
+     * 但**不再画在头上** —— 这里刻意不注册 {@link CurioHatRenderer}，那个类保留着，
+     * 以后想恢复渲染只需把下面这几行注释放开。
      */
     @SubscribeEvent
     public static void clientSetup(FMLClientSetupEvent event) {
-        if (ModList.get() != null && ModList.get().isLoaded("curios")) {
-            CurioHatRenderer.register();
-        }
+        // if (ModList.get() != null && ModList.get().isLoaded("curios")) {
+        //     CurioHatRenderer.register();
+        // }
     }
 
     @SubscribeEvent
@@ -59,5 +66,25 @@ public final class HatModClient {
     public static void registerGuiOverlays(RegisterGuiOverlaysEvent event) {
         event.registerAboveAll("green_hearts",
                 (gui, graphics, partialTick, width, height) -> GreenHeartRender.render(graphics, width, height));
+        // 「脑蚀」的 No too late（逐词弹出）
+        event.registerAboveAll("brainrot_text",
+                (gui, graphics, partialTick, width, height) -> BrainrotText.render(graphics));
+    }
+
+    /**
+     * 给玩家补一层「脑蚀」帽冠正面的画像。
+     *
+     * <p>帽冠前脸在护甲贴图里只有 7×5 个像素，画不下人像，所以单独走一层
+     * {@link BrainHatFaceLayer}：它自己绑一张 112×80 的贴图，跟着头的姿态走。
+     * 玩家是唯一会戴这顶帽子的（护甲栏 / 饰品栏），所以只挂到玩家渲染器上。
+     */
+    @SubscribeEvent
+    public static void addLayers(EntityRenderersEvent.AddLayers event) {
+        for (String skin : event.getSkins()) {
+            PlayerRenderer renderer = event.getSkin(skin);
+            if (renderer != null) {
+                renderer.addLayer(new BrainHatFaceLayer<>(renderer));
+            }
+        }
     }
 }

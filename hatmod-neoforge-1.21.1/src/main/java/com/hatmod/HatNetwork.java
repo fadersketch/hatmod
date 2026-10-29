@@ -45,16 +45,17 @@ public final class HatNetwork {
     }
 
     private static void onRegisterPayloads(RegisterPayloadHandlersEvent event) {
-        // 版本 "2"：调参同步包在加入「全」的路线帧伤 / 强制路线后字段变多了，
-        // 新旧两端互读会错位。版本不同时 NeoForge 会拒绝握手，而不是拿错值跑。
+        // 版本 "3"：BeamTargetPayload 加了 beamCount 字段，另外新增了脑蚀的两个包。
+        // 版本不同时 NeoForge 会拒绝握手，而不是拿错值跑。
         // 以后只要改动任何包的字段布局，都要把这个版本号加一。
-        var registrar = event.registrar("2");
+        var registrar = event.registrar("3");
         registrar.playToClient(
                 BeamTargetPayload.TYPE,
                 BeamTargetPayload.STREAM_CODEC,
                 (payload, context) -> context.enqueueWork(
                         () -> com.hatmod.client.BeamTargets.set(
-                                payload.wearerId(), payload.beaming(), payload.targetIds())));
+                                payload.wearerId(), payload.beaming(), payload.targetIds(),
+                                payload.beamCount())));
         registrar.playToClient(
                 SettingsSyncPayload.TYPE,
                 SettingsSyncPayload.STREAM_CODEC,
@@ -81,6 +82,16 @@ public final class HatNetwork {
                 RoutePayload.STREAM_CODEC,
                 (payload, context) -> context.enqueueWork(
                         () -> HatRouteState.setClient(payload.wearerId(), payload.routeOrdinal())));
+        registrar.playToClient(
+                BrainrotSpinPayload.TYPE,
+                BrainrotSpinPayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(
+                        () -> com.hatmod.client.BrainrotSpin.set(payload.wearerId(), payload.spin())));
+        registrar.playToClient(
+                BrainrotTextPayload.TYPE,
+                BrainrotTextPayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(
+                        () -> com.hatmod.client.BrainrotText.show()));
         registrar.playToServer(
                 SettingsUpdatePayload.TYPE,
                 SettingsUpdatePayload.STREAM_CODEC,
@@ -89,8 +100,36 @@ public final class HatNetwork {
 
     /** 通知客户端某个戴帽者「开始/停止照射」，以及它锁定了谁（每道光柱一个 id）。 */
     public static void sendBeamTarget(LivingEntity wearer, boolean beaming, int[] targetIds) {
+        sendBeamTarget(wearer, beaming, targetIds, 0);
+    }
+
+    /**
+     * 同上，但显式指定「画几道光柱」。{@code beamCount <= 0} 表示让客户端按帽子自己算。
+     */
+    public static void sendBeamTarget(LivingEntity wearer, boolean beaming, int[] targetIds, int beamCount) {
         PacketDistributor.sendToPlayersTrackingEntityAndSelf(
-                wearer, new BeamTargetPayload(wearer.getId(), targetIds, beaming));
+                wearer, new BeamTargetPayload(wearer.getId(), targetIds, beaming, beamCount));
+    }
+
+    /** 「脑蚀」的旋转状态（只影响渲染，纯视觉）。 */
+    public static void sendBrainrotSpin(LivingEntity wearer, boolean spin) {
+        PacketDistributor.sendToPlayersTrackingEntityAndSelf(
+                wearer, new BrainrotSpinPayload(wearer.getId(), spin));
+    }
+
+    /** 「脑蚀」的屏幕文字（No too late）：只发给戴帽者自己。 */
+    public static void sendBrainrotText(ServerPlayer player) {
+        PacketDistributor.sendToPlayer(player, new BrainrotTextPayload());
+    }
+
+    /** 只发给某一个玩家：某个实体此刻的自转状态（玩家刚进入视野时补发）。 */
+    public static void sendBrainrotSpinTo(ServerPlayer player, int wearerId, boolean spin) {
+        PacketDistributor.sendToPlayer(player, new BrainrotSpinPayload(wearerId, spin));
+    }
+
+    /** 只发给某一个玩家：某戴帽者当前的光柱状态（玩家刚进入视野时补发）。 */
+    public static void sendBeamTargetTo(ServerPlayer player, LivingEntity wearer, int[] targetIds, int beamCount) {
+        PacketDistributor.sendToPlayer(player, new BeamTargetPayload(wearer.getId(), targetIds, true, beamCount));
     }
 
     /**
@@ -269,12 +308,17 @@ public final class HatNetwork {
     }
 
     /**
-     * 一条光柱锁定信息：戴帽者、它锁定的目标 id 列表（每道光柱一个）、是否在照射。
+     * 一条光柱锁定信息：戴帽者、它锁定的目标 id 列表（每道光柱一个）、是否在照射，
+     * 以及**当前应该画几道**。
      *
      * <p>红帽附魔「光柱」会同时打多道光柱，所以目标是一个数组而不是单个 id：
      * 客户端按顺序给每道光柱画一条，指向各自的敌人。没有目标时是空数组。
+     *
+     * <p>{@code beamCount <= 0} 表示「按帽子算」（基础 2 道 + 附魔加成），这是老行为；
+     * 「脑蚀」的光柱道数会随时间变化（2 → 3 → 4），由服务端直接给数字。
      */
-    public record BeamTargetPayload(int wearerId, int[] targetIds, boolean beaming) implements CustomPacketPayload {
+    public record BeamTargetPayload(int wearerId, int[] targetIds, boolean beaming,
+                                    int beamCount) implements CustomPacketPayload {
 
         // 注意：createType(String) 只接收 path，会自动补上 minecraft: 命名空间，
         // 传 "hatmod:beam_target" 会变成非法的 minecraft:hatmod:beam_target。这里直接用完整 id。
@@ -287,6 +331,7 @@ public final class HatNetwork {
         private static void write(RegistryFriendlyByteBuf buf, BeamTargetPayload payload) {
             buf.writeVarInt(payload.wearerId());
             buf.writeBoolean(payload.beaming());
+            buf.writeVarInt(payload.beamCount());
             int[] ids = payload.targetIds();
             buf.writeVarInt(ids.length);
             for (int id : ids) {
@@ -297,12 +342,13 @@ public final class HatNetwork {
         private static BeamTargetPayload read(RegistryFriendlyByteBuf buf) {
             int wearerId = buf.readVarInt();
             boolean beaming = buf.readBoolean();
+            int beamCount = buf.readVarInt();
             int size = buf.readVarInt();
             int[] ids = new int[size];
             for (int i = 0; i < size; i++) {
                 ids[i] = buf.readVarInt();
             }
-            return new BeamTargetPayload(wearerId, ids, beaming);
+            return new BeamTargetPayload(wearerId, ids, beaming, beamCount);
         }
 
         @Override
@@ -481,6 +527,43 @@ public final class HatNetwork {
                         ByteBufCodecs.VAR_INT, MusicPayload::ordinal,
                         ByteBufCodecs.BOOL, MusicPayload::playing,
                         MusicPayload::new);
+
+        @Override
+        public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    /**
+     * 「脑蚀」的旋转状态：某个戴帽者此刻该不该原地打转（纯渲染，不影响任何数值）。
+     */
+    public record BrainrotSpinPayload(int wearerId, boolean spin) implements CustomPacketPayload {
+
+        public static final CustomPacketPayload.Type<BrainrotSpinPayload> TYPE =
+                new CustomPacketPayload.Type<>(HatMod.id("brainrot_spin"));
+
+        public static final StreamCodec<RegistryFriendlyByteBuf, BrainrotSpinPayload> STREAM_CODEC =
+                StreamCodec.composite(
+                        ByteBufCodecs.VAR_INT, BrainrotSpinPayload::wearerId,
+                        ByteBufCodecs.BOOL, BrainrotSpinPayload::spin,
+                        BrainrotSpinPayload::new);
+
+        @Override
+        public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    /**
+     * 「脑蚀」的屏幕文字（「No too late」逐个弹出）。没有字段 —— 收到就是弹一次。
+     */
+    public record BrainrotTextPayload() implements CustomPacketPayload {
+
+        public static final CustomPacketPayload.Type<BrainrotTextPayload> TYPE =
+                new CustomPacketPayload.Type<>(HatMod.id("brainrot_text"));
+
+        public static final StreamCodec<RegistryFriendlyByteBuf, BrainrotTextPayload> STREAM_CODEC =
+                StreamCodec.unit(new BrainrotTextPayload());
 
         @Override
         public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {

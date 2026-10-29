@@ -23,6 +23,7 @@ public class HatMod {
     public HatMod() {
         IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
         HatItems.register(modBus);
+        HatSummons.register(modBus);
         HatEnchants.register(modBus);
         HatEffects.register(modBus);
         HatParticles.register(modBus);

@@ -80,6 +80,7 @@ public final class CurioHatRenderer implements ICurioRenderer {
         String name = own == HatType.ALL ? HatRouteState.textureName(route) : this.colorName;
 
         CowboyHatModel hat = model();
+        hat.young = false;
         hat.head.copyFrom(humanoid.head);
         VertexConsumer consumer = buffer.getBuffer(RenderType.armorCutoutNoCull(armorTexture(name)));
         hat.renderToBuffer(poseStack, consumer, packedLight, OverlayTexture.NO_OVERLAY,

@@ -34,6 +34,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.scores.PlayerTeam;
@@ -225,6 +226,18 @@ public final class HatAbilities {
 
     private static final Map<UUID, HatState> STATES = new HashMap<>();
 
+    /**
+     * 戴帽者 ->（目标 -> 本轮已经造成的百分比伤害点数）。
+     *
+     * <p>光柱的「百分比伤害」每轮循环对**同一个敌人**最多打掉其最大生命的
+     * {@link #PERCENT_DAMAGE_PER_CYCLE}；打满之后就只剩固定伤害在打，目标走正常的死亡流程。
+     * 每轮循环开始（{@link #startCharge}）时清空。
+     */
+    private static final Map<UUID, Map<UUID, Float>> PERCENT_BUDGET = new HashMap<>();
+
+    /** 每轮循环对同一个敌人的百分比伤害上限（占最大生命的比例）。 */
+    private static final float PERCENT_DAMAGE_PER_CYCLE = 0.10F;
+
     private HatAbilities() {
     }
 
@@ -281,11 +294,17 @@ public final class HatAbilities {
 
     /** 一次强控。{@code forcedNoAi} 非空表示"AI 是我们关的"，解除时要还回去。 */
     private static final class Hold {
-        private final long lastTick;
+        /**
+         * 到期刻：{@code now > expiresAt} 就还它自由。
+         *
+         * <p>光柱每刻重挂一次，到期刻只往后放 2 刻；「脑蚀」的声波是一次性结算，
+         * 直接挂 3 秒 —— 两者共用这套到点释放，不会留下永久 noAI 的怪。
+         */
+        private final long expiresAt;
         private final Mob forcedNoAi;
 
-        private Hold(long lastTick, Mob forcedNoAi) {
-            this.lastTick = lastTick;
+        private Hold(long expiresAt, Mob forcedNoAi) {
+            this.expiresAt = expiresAt;
             this.forcedNoAi = forcedNoAi;
         }
     }
@@ -299,6 +318,17 @@ public final class HatAbilities {
      * 只有"原本有 AI"的才会记进 {@code forcedNoAi}，解除时也只还这一批。
      */
     private static void hold(ServerLevel level, LivingEntity living) {
+        // 光柱每刻都会重挂一次，所以到期刻只往后放 2 刻
+        holdFor(level, living, 2);
+    }
+
+    /**
+     * 按住 {@code ticks} 刻（一次性，不会自动续期）。
+     *
+     * <p>光柱靠每刻刷新维持，用的是 {@link #hold}；「脑蚀」的声波只结算一瞬，没有下一次刷新，
+     * 所以给它一个真正的持续时间 —— 这就是声波的「控制」部分。
+     */
+    private static void holdFor(ServerLevel level, LivingEntity living, int ticks) {
         living.setDeltaMovement(Vec3.ZERO);
         living.hurtMarked = true;
         living.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SLOWDOWN, HOLD_TICKS, HOLD_AMPLIFIER, false, false, false));
@@ -315,13 +345,32 @@ public final class HatAbilities {
                 forced = mob;
             }
         }
-        HELD.put(living.getUUID(), new Hold(level.getServer().getTickCount(), forced));
+        long now = level.getServer().getTickCount();
+        HELD.put(living.getUUID(), new Hold(now + ticks, forced));
     }
 
     /**
-     * 解除"超过 2 刻没再被照到"的强控并恢复 AI。
+     * 「脑蚀」的 AoE 光柱没有走 {@link #damageBeam} 那条线（它不按射线逐个判定，
+     * 而是一圈全打），所以由 {@code BrainrotCycle} 直接调这里补上同款强控 —— 射程内的敌人照样被按住。
+     */
+    static void applyBeamHold(ServerLevel level, LivingEntity living) {
+        hold(level, living);
+    }
+
+    /**
+     * 「脑蚀」的声波：一次结算，按住 {@code ticks} 刻。
      *
-     * <p>按"最后一次被照到的刻"判定，而不是在光柱结束时逐个通知：
+     * <p>和光柱同一套强控（缓慢 255 + 虚弱 255 + 挖掘疲劳 255 + 强制 {@code NoAI}），
+     * 区别只在不需要每刻续 —— 声波只发生一瞬。
+     */
+    static void applySonicHold(ServerLevel level, LivingEntity living, int ticks) {
+        holdFor(level, living, ticks);
+    }
+
+    /**
+     * 解除到期的强控并恢复 AI。
+     *
+     * <p>按「到期刻」判定（光柱每刻续 2 刻，声波一次挂 3 秒），而不是在光柱结束时逐个通知：
      * 施法者死亡、摘帽、掉线、走远等情况都能自动收尾，不会留下一只永久 noAI 的怪。
      */
     private static void releaseStaleHolds(int now) {
@@ -331,7 +380,7 @@ public final class HatAbilities {
         Iterator<Map.Entry<UUID, Hold>> iterator = HELD.entrySet().iterator();
         while (iterator.hasNext()) {
             Map.Entry<UUID, Hold> entry = iterator.next();
-            if (now - entry.getValue().lastTick <= 2) {
+            if (now <= entry.getValue().expiresAt) {
                 continue;
             }
             iterator.remove();
@@ -355,11 +404,18 @@ public final class HatAbilities {
 
     /** 每刻维护上面那四种状态。和「自己戴没戴帽子」无关：被定住的敌人自己并不戴帽子。 */
     private static void tickAuras(LivingEntity living, ServerLevel level) {
+        // 戴帽的人不被蛛网缠住（「脑蚀」的蛛网效果会在敌人脚下一顿乱铺，走进去就很难受）。
+        // 每 2 刻查一次箱子范围内的方块就够；不戴帽子的一条分支都不走。
+        if (living.tickCount % 2 == 0 && wearsHatCheaply(living)) {
+            cutCobwebs(living, level);
+        }
         if (SOUL_REAP_STASIS.containsKey(living.getUUID())) {
             tickStasis(living, level);
         }
         if (living.hasEffect(HatEffects.VEIL)) {
             tickVeil(living);
+        } else {
+            VEIL_AGGRO_FREE_UNTIL.remove(living.getUUID());
         }
         if (DOMINION_LOCKED.containsKey(living.getUUID())) {
             tickDominionFight(living);
@@ -372,6 +428,40 @@ public final class HatAbilities {
             } else {
                 tickGreenHearts(living);
             }
+        }
+    }
+
+    /**
+     * 「戴没戴帽子」的廉价版：玩家才去查饰品栏，其它生物只看头盔槽。
+     *
+     * <p>{@link #tickAuras} 是每只生物每刻都走的，饰品栏查询放在这儿会被放大成
+     * 「每刻一次全量扫描」；而蛛网免疫只需要判断「头上有没有神帽」。
+     */
+    private static boolean wearsHatCheaply(LivingEntity living) {
+        if (living instanceof Player) {
+            return HatItems.isHat(hatStack(living));
+        }
+        return HatItems.isHat(living.getItemBySlot(EquipmentSlot.HEAD));
+    }
+
+    /**
+     * 把戴帽者身上（碰撞箱范围内）的蛛网直接割掉。
+     *
+     * <p>原版靠 {@code Entity.makeStuckInBlock} 把生物粘在网里，没有「免疫」的开关；
+     * 与其改移动速度，不如把网清掉 —— 既不会被粘，也不会留下「脑蚀」铺了一地的网。
+     */
+    private static void cutCobwebs(LivingEntity living, ServerLevel level) {
+        AABB box = living.getBoundingBox();
+        BlockPos min = BlockPos.containing(box.minX, box.minY, box.minZ);
+        BlockPos max = BlockPos.containing(box.maxX, box.maxY, box.maxZ);
+        for (BlockPos pos : BlockPos.betweenClosed(min, max)) {
+            if (!level.getBlockState(pos).is(Blocks.COBWEB)) {
+                continue;
+            }
+            level.removeBlock(pos, false);
+            level.sendParticles(ParticleTypes.ITEM_COBWEB,
+                    pos.getX() + 0.5D, pos.getY() + 0.5D, pos.getZ() + 0.5D,
+                    5, 0.25D, 0.25D, 0.25D, 0.02D);
         }
     }
 
@@ -489,6 +579,17 @@ public final class HatAbilities {
     private static final int VEIL_SHAKE_PERIOD = 10;
     /** 「神隐」甩索敌的搜索半径（格）。 */
     private static final double VEIL_SHAKE_RADIUS = 32.0D;
+    /**
+     * 「神隐」刚挂上的**前 3 秒**（60 刻）内保证把索敌甩干净。
+     *
+     * <p>之后再怎么隐身也只是普通隐身（连穿盔甲都照样生效的那种）：已经开打的敌人不会被甩掉，
+     * 只有「还没发现你」的敌人会按原版隐身的规则看不见你。以前是整段时间一路甩，
+     * 等于常驻「强制脱战」，削成只保前 3 秒。
+     */
+    private static final int VEIL_AGGRO_FREE_TICKS = 60;
+
+    /** 生物 -> 「还在保证清仇恨」的截止时刻（世界刻）。 */
+    private static final Map<UUID, Long> VEIL_AGGRO_FREE_UNTIL = new HashMap<>();
 
     /**
      * 挂着「神隐」的生物每刻的维护，整体设计见 {@link HatEffects} 顶部的说明。
@@ -496,7 +597,7 @@ public final class HatAbilities {
      * <p>两件事：
      * <ul>
      *   <li>把它标成**隐身** —— 神隐本身就是隐身；</li>
-     *   <li>定期把「已经锁上来」的目标甩掉 —— 隐身劝不退已经开打的敌人，那些锁定只能一个个清。</li>
+     *   <li><b>前 3 秒</b>把「已经锁上来」的目标甩掉 —— 之后不再甩，只留普通隐身。</li>
      * </ul>
      */
     private static void tickVeil(LivingEntity living) {
@@ -507,6 +608,15 @@ public final class HatAbilities {
         // 别的效果增删会让原版按效果重推这个标记，所以每刻补一次。
         if (!living.isInvisible()) {
             living.setInvisible(true);
+        }
+        // 只保证刚挂上的前 3 秒：之后就是普通隐身，已经开打的敌人照旧锁着你
+        Long until = VEIL_AGGRO_FREE_UNTIL.get(living.getUUID());
+        if (until == null) {
+            return;
+        }
+        if (living.level().getGameTime() >= until) {
+            VEIL_AGGRO_FREE_UNTIL.remove(living.getUUID());
+            return;
         }
         AABB area = living.getBoundingBox().inflate(VEIL_SHAKE_RADIUS);
         // 监守者得**每刻**抹：它的目标与怒气一两刻就能重新长回来，隔 10 刻清一次等于没清。
@@ -602,6 +712,10 @@ public final class HatAbilities {
     }
 
     private static void tick(LivingEntity wearer, ServerLevel level) {
+        // 「虚影」不参与状态机：它不戴帽子、不放光柱，只负责绕圈、嘲讽和替挡
+        if (wearer instanceof HatSummon) {
+            return;
+        }
         UUID id = wearer.getUUID();
         HatState state = STATES.get(id);
         HatType type = HatItems.typeOf(hatStack(wearer));
@@ -618,6 +732,7 @@ public final class HatAbilities {
                 HatMusic.stop(level, wearer, state.route);
                 clearBeamSync(wearer, state);
                 STATES.remove(id);
+                PERCENT_BUDGET.remove(id);
             }
             return;
         }
@@ -710,6 +825,8 @@ public final class HatAbilities {
         state.blinks = BLINKS_PER_CHARGE + HatEnchants.extraBlinks(hat);
         state.flashBlinks = 0;
         state.dominionFired = false;
+        // 新一轮循环：百分比伤害的「每轮上限」重新开始记
+        PERCENT_BUDGET.remove(wearer.getUUID());
         HatMusic.play(level, wearer, state.route);
         // 路线换了一条：把新颜色告诉客户端（帽子会跟着变那个颜色，见 getArmorTexture）
         HatNetwork.sendRoute(wearer, HatItems.typeOf(hat), state.route);
@@ -739,6 +856,11 @@ public final class HatAbilities {
             level.playSound(null, wearer.getX(), wearer.getY(), wearer.getZ(),
                     SoundEvents.BEACON_ACTIVATE, SoundSource.PLAYERS, 0.7F, 1.6F);
             state.flash = HatSettings.flashTicks(state.route);
+            // 「全」帽专属：蓄力完成的那一刻放出 4 个虚影，绕最近的敌人转圈并嘲讽。
+            // 寿命 = 主人这一轮的照射时长（路线不同则长短不同）。
+            if (state.type == HatType.ALL) {
+                HatSummons.summonAll(level, wearer, state.flash);
+            }
             // 附魔「预知」：蓄力完成的那一刻释放，30 格内的敌人当场定住 —— 时长按等级取
             // 「本轮循环剩余长度」的 1/3、2/3、3/3（III 级打满，最大值不变）
             fireSoulReapStasis(wearer, level, hatStack(wearer), state.flash);
@@ -1342,6 +1464,11 @@ public final class HatAbilities {
     /** 还没有神隐、或者快到期了才补一次；已经有了且时间还早就不动它。 */
     private static void applyVeil(LivingEntity living, int ticks) {
         MobEffectInstance current = living.getEffect(HatEffects.VEIL);
+        if (current == null) {
+            // 刚挂上：从头开始算「保证清仇恨」的 3 秒
+            VEIL_AGGRO_FREE_UNTIL.put(living.getUUID(),
+                    living.level().getGameTime() + VEIL_AGGRO_FREE_TICKS);
+        }
         if (current == null || current.getDuration() < VEIL_REFRESH_MARGIN) {
             living.addEffect(new MobEffectInstance(HatEffects.VEIL, ticks, 0, false, false, true));
         }
@@ -1625,6 +1752,11 @@ public final class HatAbilities {
         }
         int remaining = (charging ? state.blinks : state.flashBlinks) - 1;
         if (remaining < 0) {
+            // 闪避次数已经用完：改成和「虚影」换位，这一击由虚影承担。
+            // 没有虚影在场就照常挨打（下面 return 交给原版结算）。
+            if (swapWithSummon(level, entity, source, event.getAmount())) {
+                event.setCanceled(true);
+            }
             return;
         }
 
@@ -1642,6 +1774,50 @@ public final class HatAbilities {
         // 人已经闪走了，这一击随之落空：取消伤害事件 = 这一下完全没打中。
         // 护甲不掉耐久、不吃击退、不掉血，附带的中毒/燃烧之类也一并作废。
         event.setCanceled(true);
+    }
+
+    /**
+     * 闪避次数用完后再挨打：和最近的「虚影」交换位置，这一击改由虚影承担。
+     *
+     * <p>换位是双向的 —— 虚影把你原来的位置补上（那边已经安全了），你落到虚影刚才的位置，
+     * 而这一下已经打空了。伤害用同一个 {@link DamageSource} 结算，击杀归属不变。
+     *
+     * @return 是否真的换成功了（没有虚影在场时为 {@code false}，调用方照常结算伤害）
+     */
+    private static boolean swapWithSummon(ServerLevel level, LivingEntity wearer, DamageSource source, float amount) {
+        HatSummon shade = HatSummons.nearest(level, wearer);
+        if (shade == null) {
+            return false;
+        }
+        Vec3 from = wearer.position();
+        Vec3 to = shade.position();
+        wearer.teleportTo(to.x, to.y, to.z);
+        wearer.resetFallDistance();
+        wearer.setDeltaMovement(Vec3.ZERO);
+        wearer.hurtMarked = true;
+        shade.moveTo(from.x, from.y, from.z, shade.getYRot(), shade.getXRot());
+        shade.resetFallDistance();
+        shade.setDeltaMovement(Vec3.ZERO);
+        // 这一击由虚影吃下（二十点血，大多数攻击直接把它打散）
+        shade.hurt(source, amount);
+        // 换位轨迹拖一串墨色粒子，看得出是「和影子对调了」
+        double deltaX = from.x - to.x;
+        double deltaY = from.y - to.y;
+        double deltaZ = from.z - to.z;
+        double distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ);
+        int steps = (int) Math.min(48.0D, Math.max(8.0D, Math.ceil(distance * 1.5D)));
+        for (int step = 0; step <= steps; step++) {
+            double f = (double) step / (double) steps;
+            level.sendParticles(ParticleTypes.SQUID_INK,
+                    to.x + deltaX * f, to.y + 1.0D + deltaY * f, to.z + deltaZ * f,
+                    2, 0.15D, 0.15D, 0.15D, 0.01D);
+        }
+        level.playSound(null, wearer.getX(), wearer.getY(), wearer.getZ(),
+                SoundEvents.ENDERMAN_TELEPORT, SoundSource.PLAYERS, 0.8F, 0.6F);
+        if (wearer instanceof ServerPlayer player) {
+            player.displayClientMessage(Component.translatable("message.hatmod.shade"), true);
+        }
+        return true;
     }
 
     /**
@@ -1728,8 +1904,13 @@ public final class HatAbilities {
     /** 戴帽者 ->（打过它的生物 -> 记忆到期刻）。 */
     private static final Map<UUID, Map<UUID, Long>> AGGRO = new HashMap<>();
 
-    /** 「谁打过我」记多久（10 秒 = 200 刻）。 */
-    private static final int AGGRO_MEMORY_TICKS = 200;
+    /**
+     * 「谁打过我」记多久（30 秒 = 600 刻）。
+     *
+     * <p>要盖过一整轮蓄力（最长 29.4 秒）—— 不然「打我的人」在光柱真正开火之前就被忘掉了。
+     * 每挨一下就重新计时。
+     */
+    private static final int AGGRO_MEMORY_TICKS = 600;
 
     /**
      * 记一笔「谁打了这个戴帽者」。
@@ -1753,6 +1934,40 @@ public final class HatAbilities {
         }
         long until = victim.level().getGameTime() + AGGRO_MEMORY_TICKS;
         AGGRO.computeIfAbsent(victim.getUUID(), key -> new HashMap<>()).put(living.getUUID(), until);
+    }
+
+    /**
+     * 最近**真的打过这个戴帽者**的生物（{@code amount > 0}），按距离由近到远。
+     *
+     * <p>这些目标**不受 24 格射程限制**：远程偷袭你的弓箭手、隔着一道墙丢技能的法系怪，
+     * 都会进光柱/声波的目标名单，也会把整条链路触发起来（链路的开火条件就是
+     * 「{@link #findNearestEnemy} 不为 null」）。
+     */
+    static List<LivingEntity> recentAggressors(LivingEntity wearer) {
+        Map<UUID, Long> memory = AGGRO.get(wearer.getUUID());
+        if (memory == null || memory.isEmpty()) {
+            return List.of();
+        }
+        long now = wearer.level().getGameTime();
+        memory.entrySet().removeIf(entry -> entry.getValue() < now);
+        if (memory.isEmpty()) {
+            AGGRO.remove(wearer.getUUID());
+            return List.of();
+        }
+        if (!(wearer.level() instanceof ServerLevel level)) {
+            return List.of();
+        }
+        List<LivingEntity> found = new ArrayList<>();
+        // 复制一份键来遍历：isEnemy 内部会顺手清理过期项，直接迭代原 keySet 有并发修改的风险
+        for (UUID id : new ArrayList<>(memory.keySet())) {
+            Entity entity = level.getEntity(id);
+            if (entity instanceof LivingEntity living && living.isAlive() && !living.isRemoved()
+                    && isEnemy(living, wearer)) {
+                found.add(living);
+            }
+        }
+        found.sort((a, b) -> Double.compare(wearer.distanceToSqr(a), wearer.distanceToSqr(b)));
+        return found;
     }
 
     /** 这个生物最近（{@link #AGGRO_MEMORY_TICKS} 刻内）打过这个戴帽者吗。 */
@@ -1793,15 +2008,23 @@ public final class HatAbilities {
         if (count <= 0) {
             return List.of();
         }
+        // ① 刚打过我的：不管现在离多远都算目标，而且排在最前面。
+        //    链路的触发条件（附近有没有合法敌人）就是看这个列表，所以远程偷袭也会把整轮打起来。
+        List<LivingEntity> found = new ArrayList<>(recentAggressors(wearer));
+
+        // ② 再补射程内的普通敌人
+        List<LivingEntity> nearby = new ArrayList<>();
         AABB area = wearer.getBoundingBox().inflate(FLASH_RANGE);
-        List<LivingEntity> found = new ArrayList<>();
         for (Entity entity : wearer.level().getEntities(wearer, area)) {
             if (!(entity instanceof LivingEntity living) || !isEnemy(living, wearer)) {
                 continue;
             }
-            found.add(living);
+            if (!found.contains(living)) {
+                nearby.add(living);
+            }
         }
-        found.sort((a, b) -> Double.compare(wearer.distanceToSqr(a), wearer.distanceToSqr(b)));
+        nearby.sort((a, b) -> Double.compare(wearer.distanceToSqr(a), wearer.distanceToSqr(b)));
+        found.addAll(nearby);
         return found.size() <= count ? found : new ArrayList<>(found.subList(0, count));
     }
 
@@ -1853,6 +2076,10 @@ public final class HatAbilities {
      */
     public static boolean isFriendlyTo(LivingEntity wearer, Entity entity) {
         if (entity == wearer) {
+            return true;
+        }
+        // 「脑蚀」负面效果爆出来的史莱姆/蠹虫，一进世界就记在主人名下
+        if (BrainrotMinions.isMinionOf(entity, wearer)) {
             return true;
         }
         UUID wearerOwner = ownerOf(wearer);
@@ -2182,12 +2409,17 @@ public final class HatAbilities {
 
         // 先按当前血量扣掉百分比那部分（绕过减伤），再用正常 hurt() 结算固定伤害收尾。
         // 顺序不能反：hurt() 有可能直接把目标打死，之后再 setHealth 会很难看。
-        applyPercentageDamage(target, type, power);
+        applyPercentageDamage(wearer, target, type, power);
 
         // 再结算固定伤害、冻结速度：否则 hurt() 内部施加的击退会残留在速度里。
         // 伤害类型已加入 bypasses_cooldown 标签；这里同时清零无敌帧，双保险。
         target.invulnerableTime = 0;
         target.hurt(source, poweredFlat);
+
+        // **这一击算戴帽者本人打的**：原版近战会在攻击方身上记一个 lastHurtMob，
+        // 被驯服的狼（OwnerHurtTargetGoal）、女仆、脑蚀小怪都是靠它决定「跟着主人咬谁」。
+        // 光柱是直接 hurt()，不会自动记，所以这里补上。
+        wearer.setLastHurtMob(target);
 
         // 被罩住 = 彻底控住，连技能都放不出来
         hold(level, target);
@@ -2269,7 +2501,7 @@ public final class HatAbilities {
      * {@link HatSettings#healthDamageFloor}（默认 5%）以下后就不再扣了，
      * 把收尾让给同样在打的固定伤害，让它走正常的死亡流程。
      */
-    private static void applyPercentageDamage(LivingEntity target, HatType type, float power) {
+    private static void applyPercentageDamage(LivingEntity wearer, LivingEntity target, HatType type, float power) {
         if (target.isDeadOrDying()) {
             return;
         }
@@ -2277,9 +2509,22 @@ public final class HatAbilities {
         if (health < target.getMaxHealth() * HatSettings.healthDamageFloor(type)) {
             return;
         }
+        // 每轮循环对同一个敌人最多打掉「最大生命值 × 10%」的百分比伤害，打满就不再扣
+        float budget = target.getMaxHealth() * PERCENT_DAMAGE_PER_CYCLE;
+        Map<UUID, Float> spentByTarget = PERCENT_BUDGET.computeIfAbsent(wearer.getUUID(), key -> new HashMap<>());
+        float spent = spentByTarget.getOrDefault(target.getUUID(), 0.0F);
+        float allowed = budget - spent;
+        if (allowed <= 0.0F) {
+            return;
+        }
         // setHealth 内部会 clamp 到 [0, maxHealth]；力量倍率再高，这里也夹在 (0, health) 之间，安全。
         float ratio = Math.min(HatSettings.healthDamageRatio(type) * power, 0.95F);
-        target.setHealth(health - health * ratio);
+        float damage = Math.min(health * ratio, allowed);
+        if (damage <= 0.0F) {
+            return;
+        }
+        target.setHealth(health - damage);
+        spentByTarget.put(target.getUUID(), spent + damage);
     }
 
     /**

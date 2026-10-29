@@ -3,8 +3,8 @@ package com.hatmod.client;
 import com.hatmod.HatMod;
 import com.hatmod.HatMusic;
 import com.hatmod.HatSounds;
-import com.hatmod.HatType;
 import net.minecraft.client.Minecraft;
+import net.minecraft.sounds.SoundEvent;
 import net.minecraft.world.entity.Entity;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -60,13 +60,13 @@ public final class HatMusicPlayer {
     /** 一条 BGM 的全部信息：跟着谁、放哪首、以及此刻正在响的那个声音实例。 */
     private static final class Track {
         private final Entity wearer;
-        private final HatType type;
-        private HatMusicInstance sound;
+        private final SoundEvent sound;
+        private HatMusicInstance instance;
         private int retryAt;
 
-        private Track(Entity wearer, HatType type) {
+        private Track(Entity wearer, SoundEvent sound) {
             this.wearer = wearer;
-            this.type = type;
+            this.sound = sound;
         }
     }
 
@@ -93,8 +93,7 @@ public final class HatMusicPlayer {
             return;
         }
 
-        HatType[] types = HatType.values();
-        HatType type = types[ordinal >= 0 && ordinal < types.length ? ordinal : 0];
+        SoundEvent sound = HatSounds.forOrdinal(ordinal);
         Entity wearer = minecraft.level.getEntity(wearerId);
         if (wearer == null) {
             // 客户端世界里没有这个实体（离得远没同步过来）。这时本来也听不见，直接不播。
@@ -105,24 +104,24 @@ public final class HatMusicPlayer {
         if (track != null) {
             stop(minecraft, track);
         }
-        track = new Track(wearer, type);
+        track = new Track(wearer, sound);
         TRACKS.put(wearerId, track);
         start(minecraft, track);
     }
 
     /** 建一条声道并起播（该被压住的那条靠 {@code canStartSilent} 也能正常建）。 */
     private static void start(Minecraft minecraft, Track track) {
-        track.sound = new HatMusicInstance(HatSounds.forType(track.type), track.wearer);
+        track.instance = new HatMusicInstance(track.sound, track.wearer);
         track.retryAt = ticks + RESTART_COOLDOWN;
         // 先定音量再起播，免得"一出生就该被压住"的那条响出一声再被压下去
         applyVolumes(minecraft);
-        minecraft.getSoundManager().play(track.sound);
+        minecraft.getSoundManager().play(track.instance);
     }
 
     private static void stop(Minecraft minecraft, Track track) {
-        if (track.sound != null) {
-            minecraft.getSoundManager().stop(track.sound);
-            track.sound = null;
+        if (track.instance != null) {
+            minecraft.getSoundManager().stop(track.instance);
+            track.instance = null;
         }
     }
 
@@ -172,8 +171,8 @@ public final class HatMusicPlayer {
      * 心跳一旦停了就说明这条声道已经不在引擎手里了（不管是因为播完了还是被踢了）。
      */
     private static boolean isAlive(Track track) {
-        return track.sound != null && !track.sound.isStopped()
-                && ticks - track.sound.lastHeartbeat() <= HEARTBEAT_GRACE;
+        return track.instance != null && !track.instance.isStopped()
+                && ticks - track.instance.lastHeartbeat() <= HEARTBEAT_GRACE;
     }
 
     /** 每刻重算「该听见谁」，其余一律压到 0。 */
@@ -190,8 +189,8 @@ public final class HatMusicPlayer {
             winner = own != null ? own : newestInRange(minecraft);
         }
         for (Track track : TRACKS.values()) {
-            if (track.sound != null) {
-                track.sound.setMuted(priority && track != winner);
+            if (track.instance != null) {
+                track.instance.setMuted(priority && track != winner);
             }
         }
     }
