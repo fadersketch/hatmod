@@ -232,6 +232,8 @@ public final class BrainrotCycle {
         clearShortEffect(wearer, MobEffects.SLOW_FALLING);
         clearShortEffect(wearer, MobEffects.MOVEMENT_SLOWDOWN);
         clearShortEffect(wearer, MobEffects.MOVEMENT_SPEED);
+        clearShortEffect(wearer, MobEffects.DAMAGE_RESISTANCE);
+        clearShortEffect(wearer, MobEffects.REGENERATION);
     }
 
     /** 只清掉「快到期」的那份，不会误删玩家自己喝的长效药水。 */
@@ -247,9 +249,9 @@ public final class BrainrotCycle {
     // ------------------------------------------------------------------
 
     private static void applyTimeline(ServerLevel level, LivingEntity wearer, int age) {
-        // 0 – 12 秒：黑暗
+        // 0 – 12 秒：黑暗（+ 抗性提升 II / 生命恢复 II）
         if (age < DARKNESS_END) {
-            refresh(wearer, MobEffects.DARKNESS, 0);
+            refreshDarknessShelter(wearer);
         }
 
         // 13 秒：第一次「No too late」
@@ -296,7 +298,7 @@ public final class BrainrotCycle {
         }
         if (age >= PAUSE_START && age < FIRE2_START) {
             refresh(wearer, MobEffects.LEVITATION, 0);
-            refresh(wearer, MobEffects.DARKNESS, 0);
+            refreshDarknessShelter(wearer);
         }
 
         // 70 秒：第二次「No too late」
@@ -324,11 +326,23 @@ public final class BrainrotCycle {
             BEAM_COUNT.remove(wearer.getUUID());
         }
 
-        // 100 秒 – 曲末：缓慢 + 黑暗
+        // 100 秒 – 曲末：缓慢 + 黑暗（+ 抗性提升 II / 生命恢复 II）
         if (age >= SLOW_DARK_AT) {
             refresh(wearer, MobEffects.MOVEMENT_SLOWDOWN, 0);
-            refresh(wearer, MobEffects.DARKNESS, 0);
+            refreshDarknessShelter(wearer);
         }
+    }
+
+    /**
+     * 黑暗期的自保包：黑暗 + **抗性提升 II + 生命恢复 II**。
+     *
+     * <p>黑暗阶段什么都看不见，57–71 秒还叠着漂浮、100 秒之后叠着缓慢 —— 是最容易白白挨打的几段。
+     * 戴上这顶帽子等于把血条交给曲子，所以这三段统一补上抗性和回血。
+     */
+    private static void refreshDarknessShelter(LivingEntity wearer) {
+        refresh(wearer, MobEffects.DARKNESS, 0);
+        refresh(wearer, MobEffects.DAMAGE_RESISTANCE, 1);
+        refresh(wearer, MobEffects.REGENERATION, 1);
     }
 
     /**
