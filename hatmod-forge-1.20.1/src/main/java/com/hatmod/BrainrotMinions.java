@@ -56,6 +56,8 @@ public final class BrainrotMinions {
     private static final double FOLLOW_BEGIN = 5.0D;
     /** 离主人超过这个距离直接传送过去（和驯服的狼一样，跑丢了会自己回来）。 */
     private static final double TELEPORT_AT = 24.0D;
+    /** 史莱姆只会原地蹦，寻路对它无效，所以靠传送跟人 —— 门槛放低一点，不然会落太远。 */
+    private static final double SLIME_TELEPORT_AT = 12.0D;
 
     private BrainrotMinions() {
     }
@@ -167,15 +169,15 @@ public final class BrainrotMinions {
                     mob.setTarget(wanted);
                 }
             }
-            // 没在打架就跟着主人走：超过 5 格走过来，超过 24 格直接传过去
+            // 没在打架就跟着主人走
             if (mob.getTarget() == null && mob.level() == owner.level()) {
                 double distanceSq = mob.distanceToSqr(owner);
-                if (distanceSq > TELEPORT_AT * TELEPORT_AT) {
+                // 史莱姆没有可用的寻路（只会原地蹦），靠传送跟人；其它（蠹虫）正常走位
+                double teleportAt = mob instanceof Slime ? SLIME_TELEPORT_AT : TELEPORT_AT;
+                if (distanceSq > teleportAt * teleportAt) {
                     teleportNear(mob, owner);
-                } else if (distanceSq > FOLLOW_BEGIN * FOLLOW_BEGIN) {
-                    // 史莱姆不认寻路、只认 MoveControl，所以两边都设一遍
+                } else if (!(mob instanceof Slime) && distanceSq > FOLLOW_BEGIN * FOLLOW_BEGIN) {
                     mob.getNavigation().moveTo(owner, 1.0D);
-                    mob.getMoveControl().setWantedPosition(owner.getX(), owner.getY(), owner.getZ(), 1.0D);
                 }
             }
         }

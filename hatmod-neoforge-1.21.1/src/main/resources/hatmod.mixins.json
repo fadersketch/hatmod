@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.hatmod.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "WebBlockMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

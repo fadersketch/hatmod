@@ -40,3 +40,7 @@ type="optional"
 versionRange="[9.0,)"
 ordering="AFTER"
 side="BOTH"
+
+# 蛛网免粘：直接取消 WebBlock#entityInside（见 mixin/WebBlockMixin）
+[[mixins]]
+config="hatmod.mixins.json"

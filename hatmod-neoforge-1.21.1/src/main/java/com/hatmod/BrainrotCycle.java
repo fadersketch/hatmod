@@ -209,23 +209,36 @@ public final class BrainrotCycle {
      * 我们在实体 tick 之后把它清零，所以网还在、但人照常走过去。
      */
     private static void unwebNearby(ServerLevel level, LivingEntity wearer) {
-        clearWebTrap(wearer);
+        // 真正的免疫靠 mixin 拦截 WebBlock#entityInside：名单里的人踩进网里等于踩进空气
+        WebImmunity.protect(wearer);
         double rangeSq = WEB_IMMUNITY_RANGE * WEB_IMMUNITY_RANGE;
         for (ServerPlayer player : level.players()) {
             if (player.distanceToSqr(wearer) <= rangeSq) {
-                clearWebTrap(player);
+                WebImmunity.protect(player);
             }
         }
         for (LivingEntity ally : level.getEntitiesOfClass(LivingEntity.class,
                 wearer.getBoundingBox().inflate(WEB_IMMUNITY_RANGE),
                 entity -> entity != wearer && !(entity instanceof ServerPlayer)
                         && HatAbilities.isFriendlyTo(wearer, entity))) {
-            clearWebTrap(ally);
-            }
+            WebImmunity.protect(ally);
+        }
+        // 兜底：万一某个实体在名单加进来之前就已经被粘住了，这里顺手清一下
+        clearWebTrap(wearer);
     }
 
-    /** 「定期清负面」只清这么短的效果（刻）：链路自己挂的是 40 / 100 刻，长效药水不会被误删。 */
-    private static final int PURGE_MAX_DURATION = 140;
+    /** 曲终 / 摘帽：把「免粘」名单也清掉。 */
+    static void clearWebImmunity() {
+        WebImmunity.clearServer();
+    }
+
+    /**
+     * 「定期清负面」只清这个时长以内的效果（刻 = 30 秒）。
+     *
+     * <p>传染类效果（深渊腐蚀之类）时长通常在 10–30 秒，都会被清掉；
+     * 玩家自己喝的长效药水（动辄几分钟）不动。
+     */
+    private static final int PURGE_MAX_DURATION = 600;
 
     /**
      * 负面场会顺着敌人「传染」到玩家身上（神秘佳肴的深渊腐蚀就是典型：敌人带着它碰你一下，
@@ -300,6 +313,7 @@ public final class BrainrotCycle {
         HatNetwork.sendBeamTarget(wearer, false, NO_IDS, 0);
         HatNetwork.sendBrainrotSpin(wearer, false);
         HatMusic.stopBrainrot(level, wearer);
+        clearWebImmunity();
         clearShortEffect(wearer, MobEffects.DARKNESS);
         clearShortEffect(wearer, MobEffects.LEVITATION);
         clearShortEffect(wearer, MobEffects.SLOW_FALLING);

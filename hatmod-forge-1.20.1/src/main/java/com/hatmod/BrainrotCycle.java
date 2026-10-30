@@ -225,8 +225,13 @@ public final class BrainrotCycle {
         }
     }
 
-    /** 「定期清负面」只清这么短的效果（刻）：链路自己挂的是 40 / 100 刻，长效药水不会被误删。 */
-    private static final int PURGE_MAX_DURATION = 140;
+    /**
+     * 「定期清负面」只清这个时长以内的效果（刻 = 30 秒）。
+     *
+     * <p>传染类效果（深渊腐蚀之类）时长通常在 10–30 秒，都会被清掉；
+     * 玩家自己喝的长效药水（动辄几分钟）不动。
+     */
+    private static final int PURGE_MAX_DURATION = 600;
 
     /**
      * 负面场会顺着敌人「传染」到玩家身上（神秘佳肴的深渊腐蚀就是典型：敌人带着它碰你一下，
