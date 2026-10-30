@@ -67,5 +67,8 @@
   "hatmod.tuner.route.red": "Red route dmg",
   "hatmod.tuner.route.random": "Random",
   "hatmod.tuner.forcedRoute": "Force route",
+"hatmod.tuner.hat.brainrot": "Brainrot",
+"hatmod.tuner.brainrotScale": "Damage per tick multiplier",
+"hatmod.tuner.brainrotNote": "Multiplies the black hat's per-tick damage: 1.5 = 1.5 damage per beam per tick",
   "item.hatmod.backrooms_teto_spawn_egg": "Backrooms Teto Spawn Egg"
 }

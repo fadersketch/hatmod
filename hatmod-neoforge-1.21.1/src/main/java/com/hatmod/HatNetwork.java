@@ -45,10 +45,10 @@ public final class HatNetwork {
     }
 
     private static void onRegisterPayloads(RegisterPayloadHandlersEvent event) {
-        // 版本 "3"：BeamTargetPayload 加了 beamCount 字段，另外新增了脑蚀的两个包。
+        // 版本 "4"：Settings 的同步/更新包都加了「脑蚀每帧伤害倍率」字段。
         // 版本不同时 NeoForge 会拒绝握手，而不是拿错值跑。
         // 以后只要改动任何包的字段布局，都要把这个版本号加一。
-        var registrar = event.registrar("3");
+        var registrar = event.registrar("4");
         registrar.playToClient(
                 BeamTargetPayload.TYPE,
                 BeamTargetPayload.STREAM_CODEC,
@@ -167,13 +167,13 @@ public final class HatNetwork {
     /** 把当前参数发给一个玩家（登录时、以及改完参数后给编辑者回执）。 */
     public static void sendSettings(ServerPlayer player, int feedback) {
         PacketDistributor.sendToPlayer(player, new SettingsSyncPayload(snapshot(), HatSettings.ownBgmPriority(),
-                routeSnapshot(), feedback));
+                routeSnapshot(), HatSettings.brainrotDamageScale(), feedback));
     }
 
     /** 广播给所有人（feedback = 无提示）。 */
     public static void broadcastSettings() {
         PacketDistributor.sendToAllPlayers(new SettingsSyncPayload(snapshot(), HatSettings.ownBgmPriority(),
-                routeSnapshot(), FEEDBACK_NONE));
+                routeSnapshot(), HatSettings.brainrotDamageScale(), FEEDBACK_NONE));
     }
 
     /**
@@ -185,16 +185,16 @@ public final class HatNetwork {
                                           float healthDamageFloor, String damageType,
                                           boolean ownBgmPriority,
                                           float routeBlack, float routeWhite, float routeRed,
-                                          String forcedRoute) {
+                                          String forcedRoute, float brainrotDamageScale) {
         // 客户端也留一行日志：排查「点了保存没生效」时，先看日志里有没有这一行，
         // 就能分清到底是「按钮没点到」还是「包没到服务端」。
         HatMod.LOGGER.info("[HatMod] 发出调参请求：{} 蓄力 {}t，照射 {}t，固定伤害 {}，附加 {}，下限 {}，类型 {}，"
-                        + "自己的BGM优先 {}；路线帧伤 黑{} 白{} 红{}，强制路线 {}",
+                        + "自己的BGM优先 {}；路线帧伤 黑{} 白{} 红{}，强制路线 {}；脑蚀倍率 {}",
                 type.id(), chargeTicks, flashTicks, damagePerTick, healthDamageRatio, healthDamageFloor, damageType,
-                ownBgmPriority, routeBlack, routeWhite, routeRed, forcedRoute);
+                ownBgmPriority, routeBlack, routeWhite, routeRed, forcedRoute, brainrotDamageScale);
         PacketDistributor.sendToServer(new SettingsUpdatePayload(type.ordinal(), chargeTicks, flashTicks,
                 damagePerTick, healthDamageRatio, healthDamageFloor, damageType,
-                ownBgmPriority, routeBlack, routeWhite, routeRed, forcedRoute));
+                ownBgmPriority, routeBlack, routeWhite, routeRed, forcedRoute, brainrotDamageScale));
     }
 
     /** 「全」路线相关的只读快照：三条帧伤 + 强制路线。 */
@@ -230,14 +230,15 @@ public final class HatNetwork {
         // 「全」的三条路线帧伤 + 强制路线，也在同一个「保存」里生效
         HatSettings.setRouteDamage(payload.routeBlack(), payload.routeWhite(), payload.routeRed());
         HatSettings.setForcedRoute(payload.forcedRoute());
+        HatSettings.setBrainrotDamageScale(payload.brainrotDamageScale());
         HatMod.LOGGER.info("[HatMod] {} 参数已更新：蓄力 {}t，照射 {}t，固定伤害 {}，附加 {}，下限 {}，类型 {}；"
-                        + "自己的BGM优先 {}；路线帧伤 黑{} 白{} 红{}，强制路线 {}",
+                        + "自己的BGM优先 {}；路线帧伤 黑{} 白{} 红{}，强制路线 {}；脑蚀倍率 {}",
                 type.id(), HatSettings.chargeTicks(type), HatSettings.flashTicks(type),
                 HatSettings.damagePerTick(type), HatSettings.healthDamageRatio(type),
                 HatSettings.healthDamageFloor(type), HatSettings.damageTypeId(type),
                 HatSettings.ownBgmPriority(), HatSettings.routeDamage(HatType.BLACK),
                 HatSettings.routeDamage(HatType.WHITE), HatSettings.routeDamage(HatType.RED),
-                HatSettings.forcedRoute());
+                HatSettings.forcedRoute(), HatSettings.brainrotDamageScale());
         broadcastSettings();
         sendSettings(player, FEEDBACK_OK);
     }
@@ -416,7 +417,7 @@ public final class HatNetwork {
     }
 
     public record SettingsSyncPayload(List<Snapshot> snapshots, boolean ownBgmPriority,
-                                      RouteSnapshot route, int feedback)
+                                      RouteSnapshot route, float brainrotDamageScale, int feedback)
             implements CustomPacketPayload {
 
         /** 一顶帽子的参数快照；ordinal 对应 {@link HatType} 的序号。 */
@@ -437,6 +438,7 @@ public final class HatNetwork {
             buf.writeFloat(payload.route().white());
             buf.writeFloat(payload.route().red());
             buf.writeUtf(payload.route().forcedRoute());
+            buf.writeFloat(payload.brainrotDamageScale());
             buf.writeVarInt(payload.snapshots().size());
             for (Snapshot snapshot : payload.snapshots()) {
                 buf.writeVarInt(snapshot.ordinal());
@@ -453,13 +455,14 @@ public final class HatNetwork {
             int feedback = buf.readVarInt();
             boolean ownBgmPriority = buf.readBoolean();
             RouteSnapshot route = new RouteSnapshot(buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf());
+            float brainrotDamageScale = buf.readFloat();
             int size = buf.readVarInt();
             List<Snapshot> list = new ArrayList<>(size);
             for (int i = 0; i < size; i++) {
                 list.add(new Snapshot(buf.readVarInt(), buf.readVarInt(), buf.readVarInt(),
                         buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf()));
             }
-            return new SettingsSyncPayload(list, ownBgmPriority, route, feedback);
+            return new SettingsSyncPayload(list, ownBgmPriority, route, brainrotDamageScale, feedback);
         }
 
         @Override
@@ -474,7 +477,7 @@ public final class HatNetwork {
                                         float healthDamageFloor, String damageType,
                                         boolean ownBgmPriority,
                                         float routeBlack, float routeWhite, float routeRed,
-                                        String forcedRoute)
+                                        String forcedRoute, float brainrotDamageScale)
             implements CustomPacketPayload {
 
         public static final CustomPacketPayload.Type<SettingsUpdatePayload> TYPE =
@@ -496,12 +499,14 @@ public final class HatNetwork {
             buf.writeFloat(payload.routeWhite());
             buf.writeFloat(payload.routeRed());
             buf.writeUtf(payload.forcedRoute());
+            buf.writeFloat(payload.brainrotDamageScale());
         }
 
         private static SettingsUpdatePayload read(RegistryFriendlyByteBuf buf) {
             return new SettingsUpdatePayload(buf.readVarInt(), buf.readVarInt(), buf.readVarInt(),
                     buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf(),
-                    buf.readBoolean(), buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf());
+                    buf.readBoolean(), buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf(),
+                    buf.readFloat());
         }
 
         @Override

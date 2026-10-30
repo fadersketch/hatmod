@@ -15,6 +15,7 @@ import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.tick.EntityTickEvent;
 import net.neoforged.neoforge.event.tick.PlayerTickEvent;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.Holder;
 
 import java.util.ArrayList;
@@ -98,14 +99,6 @@ public final class BrainrotCycle {
     private static final float SONIC_DAMAGE = 10.0F;
     /** 声波带控多久（刻）：3 秒定身，和光柱的强控同一套。 */
     private static final int SONIC_HOLD_TICKS = 60;
-    /**
-     * 光柱帧伤的整体缩放，乘在黑帽那份配置之上。
-     *
-     * <p>现在是 {@code 0.5}：一道光每刻只打半颗心，两道穿透打满一轮（57.5 秒）仍然有约 575 点，
-     * 但不会再出现「一轮直接把焰魔这种几百血的 Boss 灌死」。想再调就改这一个数。
-     */
-    private static final float BRAINROT_DAMAGE_SCALE = 0.5F;
-
     /** 戴帽者 -> 本轮已经走了多少刻。**键存在** = 这一轮正在进行。 */
     private static final Map<UUID, Integer> AGES = new HashMap<>();
     /** 戴帽者 -> 上一次发给客户端的自转状态，用来去重。 */
@@ -187,6 +180,10 @@ public final class BrainrotCycle {
 
         int age = stored;
         applyTimeline(level, wearer, age);
+        unwebNearby(level, wearer);
+        if (age % 20 == 0) {
+            purgePlayerDebuffs(level, wearer);
+        }
         tickingSonic(level, wearer);
         // 负面效果爆出来的史莱姆/蠹虫：每 5 刻收一次目标
         if (age % 5 == 0) {
@@ -198,6 +195,82 @@ public final class BrainrotCycle {
             return;
         }
         AGES.put(id, next);
+    }
+
+    /** 链路期间，蛛网免疫的半径（格）：戴帽者、这个范围内的玩家和己方单位都不会被粘住。 */
+    private static final double WEB_IMMUNITY_RANGE = 24.0D;
+
+    /**
+     * 链路期间给玩家 / 附近的友方「蛛网免疫」。
+     *
+     * <p>网**照旧留在世界里**（不再像以前那样把网割掉），只是把「被粘住」的移动惩罚清掉：
+     * 原版 {@code WebBlock.entityInside} 每刻把 {@link net.minecraft.world.entity.Entity#stuckSpeedMultiplier}
+     * 设成 {@code (0.25, 0.05, 0.25)}，下一次 {@code move()} 开头吃掉这个值才会变慢；
+     * 我们在实体 tick 之后把它清零，所以网还在、但人照常走过去。
+     */
+    private static void unwebNearby(ServerLevel level, LivingEntity wearer) {
+        clearWebTrap(wearer);
+        double rangeSq = WEB_IMMUNITY_RANGE * WEB_IMMUNITY_RANGE;
+        for (ServerPlayer player : level.players()) {
+            if (player.distanceToSqr(wearer) <= rangeSq) {
+                clearWebTrap(player);
+            }
+        }
+        for (LivingEntity ally : level.getEntitiesOfClass(LivingEntity.class,
+                wearer.getBoundingBox().inflate(WEB_IMMUNITY_RANGE),
+                entity -> entity != wearer && !(entity instanceof ServerPlayer)
+                        && HatAbilities.isFriendlyTo(wearer, entity))) {
+            clearWebTrap(ally);
+            }
+    }
+
+    /** 「定期清负面」只清这么短的效果（刻）：链路自己挂的是 40 / 100 刻，长效药水不会被误删。 */
+    private static final int PURGE_MAX_DURATION = 140;
+
+    /**
+     * 负面场会顺着敌人「传染」到玩家身上（神秘佳肴的深渊腐蚀就是典型：敌人带着它碰你一下，
+     * 你也会被染上），所以链路期间每 20 刻给 **戴帽者 + 24 格内的玩家** 清一次短时负面效果。
+     *
+     * <p>链路自己挂的那几个（黑暗 / 漂浮 / 缓降 / 缓慢 / 迅捷）跳过 —— 它们是剧本的一部分，
+     * 不是「外来的脏东西」。
+     */
+    private static void purgePlayerDebuffs(ServerLevel level, LivingEntity wearer) {
+        purgeShortDebuffs(wearer);
+        double rangeSq = WEB_IMMUNITY_RANGE * WEB_IMMUNITY_RANGE;
+        for (ServerPlayer player : level.players()) {
+            if (player != wearer && player.distanceToSqr(wearer) <= rangeSq) {
+                purgeShortDebuffs(player);
+            }
+        }
+    }
+
+    private static void purgeShortDebuffs(LivingEntity target) {
+        for (Holder<MobEffect> holder : BuiltInRegistries.MOB_EFFECT.holders().toList()) {
+            MobEffect effect = holder.value();
+            if (effect.isBeneficial() || effect.isInstantenous()) {
+                continue;
+            }
+            if (holder.is(MobEffects.DARKNESS) || holder.is(MobEffects.LEVITATION)
+                    || holder.is(MobEffects.SLOW_FALLING) || holder.is(MobEffects.MOVEMENT_SLOWDOWN)
+                    || holder.is(MobEffects.MOVEMENT_SPEED)) {
+                continue;
+            }
+            MobEffectInstance instance = target.getEffect(holder);
+            if (instance != null && instance.getDuration() <= PURGE_MAX_DURATION) {
+                target.removeEffect(holder);
+            }
+        }
+    }
+
+    /** 站在蛛网里就把「被粘」的移动惩罚清掉。 */
+    private static void clearWebTrap(LivingEntity entity) {
+        net.minecraft.world.level.block.state.BlockState state =
+                entity.level().getBlockState(entity.blockPosition());
+        if (state.is(net.minecraft.world.level.block.Blocks.COBWEB)) {
+            // stuckSpeedMultiplier 是 protected，外面改不了；makeStuckInBlock 是公开入口，
+            // 传一个全零倍率进去，下一次 move() 就不会乘上「被粘」的那个 0.25。
+            entity.makeStuckInBlock(state, Vec3.ZERO);
+        }
     }
 
     private static boolean wearsBrainrot(LivingEntity living) {
@@ -313,6 +386,8 @@ public final class BrainrotCycle {
         }
         if (age >= FIRE2_START && age < SLOW_DARK_AT) {
             setSpin(level, wearer, true);
+            // 照射期一律带迅捷 II：和 28.5–57 秒那一段保持一致，光束在放就一定有加速
+            refresh(wearer, MobEffects.MOVEMENT_SPEED, 1);
             if (age < SLOW_FALL_END) {
                 refresh(wearer, MobEffects.SLOW_FALLING, 0);
             }
@@ -324,6 +399,8 @@ public final class BrainrotCycle {
             HatNetwork.sendBeamTarget(wearer, false, NO_IDS, 0);
             BEAM_IDS.remove(wearer.getUUID());
             BEAM_COUNT.remove(wearer.getUUID());
+            // 光束停了，照射期的迅捷 II 也一起撤掉（别让它跟缓慢叠在一起）
+            clearShortEffect(wearer, MobEffects.MOVEMENT_SPEED);
         }
 
         // 100 秒 – 曲末：缓慢 + 黑暗（+ 抗性提升 II / 生命恢复 II）
@@ -343,6 +420,39 @@ public final class BrainrotCycle {
         refresh(wearer, MobEffects.DARKNESS, 0);
         refresh(wearer, MobEffects.DAMAGE_RESISTANCE, 1);
         refresh(wearer, MobEffects.REGENERATION, 1);
+    }
+
+    /** 这一轮已经走到第几刻；没有在跑返回 -1。 */
+    static int ageOf(LivingEntity wearer) {
+        Integer age = AGES.get(wearer.getUUID());
+        return age == null ? -1 : age;
+    }
+
+    /**
+     * Teto 提前多少刻定住：**「No」刚要出声之前 6 刻（0.3 秒）**。
+     *
+     * <p>文字是 13 秒整才开始画的，提前一点定住，看上去才是「影子先僵住、词再砸下来」，
+     * 而不是词都出来了它们才反应过来。
+     */
+    private static final int TEXT_FREEZE_LEAD = 6;
+
+    /**
+     * 定住多久（刻）：从提前量之后起算 **16 刻（0.8 秒）**，整段 1.1 秒 ——
+     * 比三个词弹完（18 刻）短一点，收在「late」刚砸下来之后。
+     *
+     * <p>客户端的文字本身还会继续停到 58 刻（见 {@code client.BrainrotText.TOTAL_TICKS}），
+     * 那一段 Teto 已经在继续转了 —— 想改就改这两个数。
+     */
+    private static final int TEXT_TICKS = 16;
+
+    /**
+     * Teto 现在要不要停转：只在**第一次「No too late」弹字的那几秒**里停。
+     *
+     * <p>停在圆周上的当前位置、只跟着戴帽者平移（与玩家相对静止）；文字一淡出就接着转。
+     */
+    static boolean tetoOrbitFrozen(LivingEntity wearer) {
+        int age = ageOf(wearer);
+        return age >= TEXT_FIRST - TEXT_FREEZE_LEAD && age < TEXT_FIRST + TEXT_TICKS;
     }
 
     /**
@@ -417,8 +527,8 @@ public final class BrainrotCycle {
             return;
         }
         DamageSource source = HatSettings.damageSource(level, wearer, HatType.BLACK);
-        // 帧伤 = 黑帽那份配置 × BRAINROT_DAMAGE_SCALE（0.5，即再减半）
-        float flat = HatSettings.damagePerTick(HatType.BLACK) * BRAINROT_DAMAGE_SCALE;
+        // 帧伤 = 黑帽那份配置 × 脑蚀倍率（默认 1.5，可在调参器「脑蚀」页改）
+        float flat = HatSettings.damagePerTick(HatType.BLACK) * HatSettings.brainrotDamageScale();
         Vec3 origin = HatAbilities.beamOrigin(wearer, 1.0F);
         Set<UUID> hitThisTick = new HashSet<>();
         int beams = Math.min(BEAM_LANES, targets.size());

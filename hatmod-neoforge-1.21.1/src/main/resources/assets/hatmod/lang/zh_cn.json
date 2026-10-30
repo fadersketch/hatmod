@@ -67,5 +67,8 @@
   "hatmod.tuner.route.red": "红路线帧伤",
   "hatmod.tuner.route.random": "随机",
   "hatmod.tuner.forcedRoute": "强制路线",
+"hatmod.tuner.hat.brainrot": "脑蚀",
+"hatmod.tuner.brainrotScale": "每帧伤害倍率",
+"hatmod.tuner.brainrotNote": "倍率乘在黑帽的每刻伤害上：1.5 = 每道每刻 1.5 点伤害",
   "item.hatmod.backrooms_teto_spawn_egg": "后室 Teto 刷怪蛋"
 }

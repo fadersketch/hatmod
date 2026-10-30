@@ -403,11 +403,6 @@ public final class HatAbilities {
 
     /** 每刻维护上面那三种状态。和「自己戴没戴帽子」无关：被定住的敌人自己并不戴帽子。 */
     private static void tickAuras(LivingEntity living, ServerLevel level) {
-        // 戴帽的人不被蛛网缠住（「脑蚀」的蛛网效果会在敌人脚下一顿乱铺，走进去就很难受）。
-        // 每 2 刻查一次箱子范围内的方块就够；不戴帽子的一条分支都不走。
-        if (living.tickCount % 2 == 0 && wearsHatCheaply(living)) {
-            cutCobwebs(living, level);
-        }
         if (SOUL_REAP_STASIS.containsKey(living.getUUID())) {
             tickStasis(living, level);
         }
@@ -427,40 +422,6 @@ public final class HatAbilities {
             } else {
                 tickGreenHearts(living);
             }
-        }
-    }
-
-    /**
-     * 「戴没戴帽子」的廉价版：玩家才去查饰品栏，其它生物只看头盔槽。
-     *
-     * <p>{@link #tickAuras} 是每只生物每刻都走的，饰品栏查询放在这儿会被放大成
-     * 「每刻一次全量扫描」；而蛛网免疫只需要判断「头上有没有神帽」。
-     */
-    private static boolean wearsHatCheaply(LivingEntity living) {
-        if (living instanceof Player) {
-            return HatItems.isHat(hatStack(living));
-        }
-        return HatItems.isHat(living.getItemBySlot(EquipmentSlot.HEAD));
-    }
-
-    /**
-     * 把戴帽者身上（碰撞箱范围内）的蛛网直接割掉。
-     *
-     * <p>原版靠 {@code Entity.makeStuckInBlock} 把生物粘在网里，没有「免疫」的开关；
-     * 与其改移动速度，不如把网清掉 —— 既不会被粘，也不会留下「脑蚀」铺了一地的网。
-     */
-    private static void cutCobwebs(LivingEntity living, ServerLevel level) {
-        AABB box = living.getBoundingBox();
-        BlockPos min = BlockPos.containing(box.minX, box.minY, box.minZ);
-        BlockPos max = BlockPos.containing(box.maxX, box.maxY, box.maxZ);
-        for (BlockPos pos : BlockPos.betweenClosed(min, max)) {
-            if (!level.getBlockState(pos).is(Blocks.COBWEB)) {
-                continue;
-            }
-            level.removeBlock(pos, false);
-            level.sendParticles(ParticleTypes.ITEM_SNOWBALL,
-                    pos.getX() + 0.5D, pos.getY() + 0.5D, pos.getZ() + 0.5D,
-                    5, 0.25D, 0.25D, 0.25D, 0.02D);
         }
     }
 

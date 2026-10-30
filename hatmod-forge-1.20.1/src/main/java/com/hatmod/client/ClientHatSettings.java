@@ -26,6 +26,9 @@ public final class ClientHatSettings {
     /** 「强制路线」：{@code random} 或 black/white/red。 */
     private static String forcedRoute = HatSettings.ROUTE_RANDOM;
 
+    /** 「脑蚀」每帧伤害倍率，随服务端同步过来；没同步前按出厂值（1.5）。 */
+    private static float brainrotDamageScale = HatSettings.DEFAULT_BRAINROT_DAMAGE_SCALE;
+
     private ClientHatSettings() {
     }
 
@@ -56,6 +59,14 @@ public final class ClientHatSettings {
         routeDamageWhite = white;
         routeDamageRed = red;
         forcedRoute = forced == null ? HatSettings.ROUTE_RANDOM : forced;
+    }
+
+    public static float brainrotDamageScale() {
+        return brainrotDamageScale;
+    }
+
+    public static void setBrainrotDamageScale(float value) {
+        brainrotDamageScale = value;
     }
 
     /** 一份只读参数（就是个值对象，字段 public 方便界面直接读）。 */
@@ -112,6 +123,7 @@ public final class ClientHatSettings {
                     snapshot.healthDamageRatio(), snapshot.healthDamageFloor(), snapshot.damageType());
         }
         ownBgmPriority = msg.ownBgmPriority();
+        brainrotDamageScale = msg.brainrotDamageScale();
         setRoute(msg.route().black(), msg.route().white(), msg.route().red(), msg.route().forcedRoute());
 
         net.minecraft.client.Minecraft minecraft = net.minecraft.client.Minecraft.getInstance();

@@ -78,6 +78,11 @@ public class HatTunerScreen extends Screen {
 
     private HatType selected = HatType.BLACK;
 
+    /** 是不是停在「脑蚀」页：那一页六行里只留第一行（每帧伤害倍率）。 */
+    private boolean brainrotTab;
+    /** 「脑蚀」页的按钮。 */
+    private Button brainrotButton;
+
     /** 全局开关「自己的 BGM 优先」在界面上的待保存状态。 */
     private boolean ownBgmPriority;
     private Button ownBgmButton;
@@ -136,11 +141,12 @@ public class HatTunerScreen extends Screen {
         int fieldX = fieldX();
         int fieldW = fieldW();
 
-        // 帽子切换：按钮总宽按屏宽收着排，保证四顶帽子在最小 GUI 缩放（320 宽）下也放得下
+        // 帽子切换：按钮总宽按屏宽收着排，保证四顶帽子 +「脑蚀」在最小 GUI 缩放（320 宽）下也放得下
         HatType[] types = HatType.values();
         int gap = 4;
-        int buttonW = Math.min(100, (Math.min(this.width, 360) - gap * (types.length - 1)) / types.length);
-        int totalW = buttonW * types.length + gap * (types.length - 1);
+        int count = types.length + 1;
+        int buttonW = Math.min(90, (Math.min(this.width, 360) - gap * (count - 1)) / count);
+        int totalW = buttonW * count + gap * (count - 1);
         int startX = this.width / 2 - totalW / 2;
         for (int i = 0; i < types.length; i++) {
             HatType type = types[i];
@@ -151,6 +157,11 @@ public class HatTunerScreen extends Screen {
                     .build();
             addRenderableWidget(hatButtons[i]);
         }
+        this.brainrotButton = Button.builder(Component.translatable("hatmod.tuner.hat.brainrot"),
+                        button -> selectBrainrot())
+                .bounds(startX + types.length * (buttonW + gap), HAT_ROW_Y, buttonW, BUTTON_H)
+                .build();
+        addRenderableWidget(this.brainrotButton);
 
         // 六个输入框
         for (int i = 0; i < FIELD_KEYS.length; i++) {
@@ -222,11 +233,31 @@ public class HatTunerScreen extends Screen {
 
     /** 切换帽子：把框里的值换成那顶帽子的当前值。 */
     private void select(HatType type) {
+        this.brainrotTab = false;
         this.selected = type;
         fillFromSelection();
     }
 
+    /** 切到「脑蚀」页：六行里只留第一行，填它的每帧伤害倍率。 */
+    private void selectBrainrot() {
+        this.brainrotTab = true;
+        fillFromSelection();
+    }
+
     private void fillFromSelection() {
+        if (this.brainrotTab) {
+            fields[0].setValue(format(ClientHatSettings.brainrotDamageScale()));
+            for (int i = 1; i < fields.length; i++) {
+                fields[i].setValue("");
+            }
+            setFieldVisibility();
+            updateButtons();
+            if (this.forcedRouteButton != null) {
+                this.forcedRouteButton.visible = false;
+                this.forcedRouteButton.active = false;
+            }
+            return;
+        }
         ClientHatSettings.Snapshot snapshot = ClientHatSettings.get(this.selected);
         if (this.selected == HatType.ALL) {
             // 「全」页：前三个框改成三条路线的帧伤（蓄力/照射是路线驱动的，不在这里调），
@@ -250,17 +281,36 @@ public class HatTunerScreen extends Screen {
             this.forcedRouteButton.setMessage(forcedRouteLabel());
         }
 
+        setFieldVisibility();
+        updateButtons();
+    }
+
+    /** 「脑蚀」页只留第一行；其它页六行全显示。 */
+    private void setFieldVisibility() {
+        for (int i = 0; i < fields.length; i++) {
+            fields[i].visible = !this.brainrotTab || i == 0;
+        }
+    }
+
+    /** 当前正在编辑的那个按钮置灰（当高亮用）。 */
+    private void updateButtons() {
         HatType[] types = HatType.values();
         for (int i = 0; i < types.length; i++) {
             if (hatButtons[i] != null) {
-                // 当前正在编辑的那顶按下去没有意义，置灰当高亮用
-                hatButtons[i].active = types[i] != this.selected;
+                hatButtons[i].active = !this.brainrotTab && types[i] != this.selected;
             }
+        }
+        if (this.brainrotButton != null) {
+            this.brainrotButton.active = !this.brainrotTab;
         }
     }
 
     /** 「恢复默认」只改界面，点保存才真的生效。 */
     private void resetFields() {
+        if (this.brainrotTab) {
+            fields[0].setValue(format(HatSettings.DEFAULT_BRAINROT_DAMAGE_SCALE));
+            return;
+        }
         if (this.selected == HatType.ALL) {
             fields[0].setValue(format(HatSettings.DEFAULT_ROUTE_DAMAGE_BLACK));
             fields[1].setValue(format(HatSettings.DEFAULT_ROUTE_DAMAGE_WHITE));
@@ -281,6 +331,10 @@ public class HatTunerScreen extends Screen {
 
     private void save() {
         if (this.minecraft == null || this.minecraft.player == null) {
+            return;
+        }
+        if (this.brainrotTab) {
+            saveBrainrot();
             return;
         }
         Integer chargeTicks;
@@ -334,7 +388,8 @@ public class HatTunerScreen extends Screen {
         String forced = this.forcedRoute == null ? HatSettings.ROUTE_RANDOM : this.forcedRoute;
         HatNetwork.sendSettingsUpdate(this.selected, chargeTicks, flashTicks,
                 damagePerTick, ratio, floor, damageType, this.ownBgmPriority,
-                routeBlack, routeWhite, routeRed, forced);
+                routeBlack, routeWhite, routeRed, forced,
+                ClientHatSettings.brainrotDamageScale());
         // 本地立刻回显：界面上「当前值」马上就是刚填的这份，不用等服务端回包。
         // 真正生效的仍然是服务端那份 —— 服务端改完会广播回来覆盖这里；
         // 万一被拒（非创造/非 OP），回包里带的也是服务端的真实值，界面会自己纠回来。
@@ -344,6 +399,25 @@ public class HatTunerScreen extends Screen {
         // 强制路线只在「全」页有意义，也只在那一页改
         ClientHatSettings.setRoute(routeBlack, routeWhite, routeRed,
                 this.selected == HatType.ALL ? forced : ClientHatSettings.forcedRoute());
+        onClose();
+    }
+
+    /**
+     * 「脑蚀」页只改一个倍率：其它参数原样提交（和「全」页提交占位值是同一个思路）。
+     */
+    private void saveBrainrot() {
+        Float scale = parseFloat(0);
+        if (scale == null) {
+            complain("hatmod.tuner.badNumber");
+            return;
+        }
+        ClientHatSettings.Snapshot snapshot = ClientHatSettings.get(this.selected);
+        HatNetwork.sendSettingsUpdate(this.selected, snapshot.chargeTicks, snapshot.flashTicks,
+                snapshot.damagePerTick, snapshot.healthDamageRatio, snapshot.healthDamageFloor,
+                snapshot.damageType, this.ownBgmPriority,
+                ClientHatSettings.routeDamage(HatType.BLACK), ClientHatSettings.routeDamage(HatType.WHITE),
+                ClientHatSettings.routeDamage(HatType.RED), ClientHatSettings.forcedRoute(), scale);
+        ClientHatSettings.setBrainrotDamageScale(scale);
         onClose();
     }
 
@@ -414,15 +488,22 @@ public class HatTunerScreen extends Screen {
         int labelX = left() + 4;
         boolean all = this.selected == HatType.ALL;
         for (int i = 0; i < FIELD_KEYS.length; i++) {
-            // 「全」页：前三个框的标签换成黑/白/红三条路线的帧伤
-            String key = all && i < ALL_ROUTE_KEYS.length ? ALL_ROUTE_KEYS[i] : FIELD_KEYS[i];
+            // 「脑蚀」页只有第一行；「全」页前三个框的标签换成黑/白/红三条路线的帧伤
+            if (this.brainrotTab && i > 0) {
+                continue;
+            }
+            String key = this.brainrotTab
+                    ? "hatmod.tuner.brainrotScale"
+                    : (all && i < ALL_ROUTE_KEYS.length ? ALL_ROUTE_KEYS[i] : FIELD_KEYS[i]);
             int y = rowY(i) + (FIELD_H - this.font.lineHeight) / 2 + 1;
             graphics.drawString(this.font, Component.translatable(key), labelX, y, 0xA0A0A0);
         }
 
         // 底部按钮上方那一行：平时写正在编辑哪顶，选中「全」时换成它自己那句说明
         // （前三个框的含义 + 蓄力/照射为什么不在这一页调）。只占一行，不会顶到按钮。
-        Component status = all
+        Component status = this.brainrotTab
+                ? Component.translatable("hatmod.tuner.brainrotNote")
+                : all
                 ? Component.translatable("hatmod.tuner.allRouteNote")
                 : Component.translatable("hatmod.tuner.editing",
                         Component.translatable("hatmod.tuner.hat." + this.selected.id()));

@@ -13,6 +13,7 @@ import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
@@ -74,8 +75,11 @@ public class Teto extends PathfinderMob implements OwnableEntity {
     private static final int AURA_REFRESH_BELOW = 60;
     /** 嘲讽半径。 */
     private static final double TAUNT_RADIUS = 24.0D;
-    /**
-     * 多久给一次仇恨（刻）：**3 秒一次**，而且只是「给一下」，不是一直按着。
+    /** 永久发光的刷新周期（刻）：每 5 秒补一层。 */
+    private static final int GLOW_PERIOD = 100;
+    /** 每层发光持续多久（刻）：11 秒，比周期长一倍多，永远不断。 */
+    private static final int GLOW_DURATION = 220;
+    /** 多久给一次仇恨（刻）：**3 秒一次**，而且只是「给一下」，不是一直按着。
      *
      * <p>中间这段时间怪物的索敌完全交还原版 AI —— 它们会重新挑最近的目标（多半又是主人），
      * 所以嘲讽只是一次次把人往回拉，而不是永久锁死。
@@ -173,9 +177,15 @@ public class Teto extends PathfinderMob implements OwnableEntity {
     /**
      * **免疫所有负面效果**：自己就是负面效果场，被自己的场或者别的毒/凋零叠上去很荒唐。
      * 增益类照常放行 —— 万一同队的玩家想给它上个抗性。
+     *
+     * <p>发光（GLOWING）是原版的中性效果，不算增益，但它是自己给自己挂的「永久轮廓」，
+     * 所以单独放行。
      */
     @Override
     public boolean canBeAffected(MobEffectInstance effect) {
+        if (effect.getEffect().is(MobEffects.GLOWING)) {
+            return true;
+        }
         return effect.getEffect().value().isBeneficial();
     }
 
@@ -271,6 +281,10 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         if (this.tickCount % AURA_PERIOD == 0) {
             this.applyAura(level, owner);
         }
+        // 永久发光：黑暗阶段（尤其是 57 秒之后那段）也能一眼看见它，隔着墙也有轮廓
+        if (this.tickCount % GLOW_PERIOD == 0) {
+            this.addEffect(new MobEffectInstance(MobEffects.GLOWING, GLOW_DURATION, 0, false, false, false));
+        }
     }
 
     /** 永远绕**主人**转（不再去追最近的敌人）。 */
@@ -280,7 +294,12 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         // 角度本身会写进存档（见 addAdditionalSaveData），所以区块重载、跨维度、
         // 退出重进都不会把它抹回 0 —— 一旦抹回 0，四只就会「跳回起点」，
         // 看上去就像整圈突然反了个方向。
-        this.orbitAngle += ORBIT_SPEED;
+        //
+        // 「No too late」弹字期间不推进角度：停在圆周上的当前位置，只跟着主人平移
+        // （与玩家相对静止）。上下微浮也挂在同一个角度上，所以会一起定住；文字一淡出就接着转。
+        if (!(this.summoned && BrainrotCycle.tetoOrbitFrozen(owner))) {
+            this.orbitAngle += ORBIT_SPEED;
+        }
         double angle = this.orbitAngle + this.orbitPhase;
         double x = center.x + Math.cos(angle) * ORBIT_RADIUS;
         double z = center.z + Math.sin(angle) * ORBIT_RADIUS;
@@ -348,6 +367,11 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         AABB area = this.getBoundingBox().inflate(AURA_RADIUS);
         for (LivingEntity target : level.getEntitiesOfClass(LivingEntity.class, area)) {
             if (target == this || target.isRemoved() || target.isDeadOrDying()) {
+                continue;
+            }
+            // 玩家永远不吃负面场：isEnemy 本来就把玩家挡在外面，这里再拦一道死门，
+            // 以后谁放宽了 isEnemy 也不会把队友/路人卷进来。
+            if (target instanceof net.minecraft.world.entity.player.Player) {
                 continue;
             }
             if (!HatAbilities.isEnemy(target, owner)) {

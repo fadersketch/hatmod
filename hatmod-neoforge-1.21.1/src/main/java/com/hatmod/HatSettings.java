@@ -64,6 +64,15 @@ public final class HatSettings {
     public static final String DEFAULT_DAMAGE_TYPE = "hatmod:flash";
 
     /**
+     * 「脑蚀」光柱每帧伤害的倍率（乘在黑帽那份 {@code damagePerTick} 上）。
+     *
+     * <p>1.5 = 每道每刻 1.5 点伤害（0.75 颗心）。可以在调参器的「脑蚀」页改；
+     * 老配置文件里没有这个字段时会自动落成这个出厂值（字段带初始化值，
+     * 不需要为此加 {@link #CONFIG_VERSION}，也就不会把用户调好的其它数值冲掉）。
+     */
+    public static final float DEFAULT_BRAINROT_DAMAGE_SCALE = 1.5F;
+
+    /**
      * 「自己的 BGM 优先」的出厂默认值：开启。
      *
      * <p>开启后每个听者只听得见一条帽子 BGM：自己的那条绝对优先；
@@ -112,6 +121,9 @@ public final class HatSettings {
     private static float routeDamageWhite = DEFAULT_ROUTE_DAMAGE_WHITE;
     private static float routeDamageRed = DEFAULT_ROUTE_DAMAGE_RED;
 
+    /** 「脑蚀」每帧伤害倍率当前值（服务端权威）。 */
+    private static float brainrotDamageScale = DEFAULT_BRAINROT_DAMAGE_SCALE;
+
     /** 「强制路线」当前值；{@link #ROUTE_RANDOM} 表示正常随机。 */
     private static String forcedRoute = ROUTE_RANDOM;
 
@@ -148,6 +160,9 @@ public final class HatSettings {
         public float routeDamageBlack = DEFAULT_ROUTE_DAMAGE_BLACK;
         public float routeDamageWhite = DEFAULT_ROUTE_DAMAGE_WHITE;
         public float routeDamageRed = DEFAULT_ROUTE_DAMAGE_RED;
+
+        /** 「脑蚀」每帧伤害倍率（出厂 1.5）。老配置里没有这个字段时自动落成出厂值。 */
+        public float brainrotDamageScale = DEFAULT_BRAINROT_DAMAGE_SCALE;
 
         /**
          * 「强制路线」：{@link #ROUTE_RANDOM}（默认，正常随机）或 {@code black} / {@code white} / {@code red}。
@@ -292,6 +307,19 @@ public final class HatSettings {
         return null;
     }
 
+    /** 「脑蚀」每帧伤害倍率（乘在黑帽那份帧伤上）。 */
+    public static synchronized float brainrotDamageScale() {
+        ensureLoaded();
+        return brainrotDamageScale;
+    }
+
+    /** 改「脑蚀」每帧伤害倍率（调参器「脑蚀」页）。 */
+    public static synchronized void setBrainrotDamageScale(float value) {
+        ensureLoaded();
+        brainrotDamageScale = clamp(value, MIN_DAMAGE, MAX_DAMAGE);
+        save();
+    }
+
     /** 改「全」三条路线的帧伤（调参器「全帽」页 / 命令调用）。 */
     public static synchronized void setRouteDamage(float black, float white, float red) {
         ensureLoaded();
@@ -380,6 +408,7 @@ public final class HatSettings {
         routeDamageWhite = DEFAULT_ROUTE_DAMAGE_WHITE;
         routeDamageRed = DEFAULT_ROUTE_DAMAGE_RED;
         forcedRoute = ROUTE_RANDOM;
+        brainrotDamageScale = DEFAULT_BRAINROT_DAMAGE_SCALE;
         for (HatType type : HatType.values()) {
             ENTRIES.put(type, new Entry(type));
         }
@@ -408,6 +437,7 @@ public final class HatSettings {
             routeDamageWhite = clamp(fromDisk.routeDamageWhite, MIN_DAMAGE, MAX_DAMAGE);
             routeDamageRed = clamp(fromDisk.routeDamageRed, MIN_DAMAGE, MAX_DAMAGE);
             forcedRoute = normalizeForcedRoute(fromDisk.forcedRoute);
+            brainrotDamageScale = clamp(fromDisk.brainrotDamageScale, MIN_DAMAGE, MAX_DAMAGE);
             for (HatType type : HatType.values()) {
                 Entry stored = fromDisk.hats.get(type.id());
                 if (stored == null) {
@@ -435,6 +465,7 @@ public final class HatSettings {
         out.routeDamageWhite = routeDamageWhite;
         out.routeDamageRed = routeDamageRed;
         out.forcedRoute = forcedRoute;
+        out.brainrotDamageScale = brainrotDamageScale;
         out.hats = new LinkedHashMap<>();
         for (HatType type : HatType.values()) {
             Entry entry = ENTRIES.get(type);

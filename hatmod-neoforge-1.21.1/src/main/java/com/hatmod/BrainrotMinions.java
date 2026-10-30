@@ -5,17 +5,22 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.OwnableEntity;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.monster.Silverfish;
 import net.minecraft.world.entity.monster.Slime;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
+import net.neoforged.neoforge.event.entity.living.LivingDropsEvent;
 import net.neoforged.neoforge.event.entity.living.LivingIncomingDamageEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -43,6 +48,14 @@ public final class BrainrotMinions {
 
     /** 小怪 -> 主人。 */
     private static final Map<UUID, UUID> OWNERS = new HashMap<>();
+
+    /** 被主人「坐下」命令定住的小怪。 */
+    private static final Set<UUID> SITTING = new HashSet<>();
+
+    /** 离主人超过这个距离就开始往过走（格）。 */
+    private static final double FOLLOW_BEGIN = 5.0D;
+    /** 离主人超过这个距离直接传送过去（和驯服的狼一样，跑丢了会自己回来）。 */
+    private static final double TELEPORT_AT = 24.0D;
 
     private BrainrotMinions() {
     }
@@ -138,6 +151,12 @@ public final class BrainrotMinions {
             if (mob.distanceToSqr(owner) > rangeSq) {
                 continue;
             }
+            // 听指挥坐下：原地待着，不跟随也不主动打人
+            if (SITTING.contains(mob.getUUID())) {
+                mob.setTarget(null);
+                mob.getNavigation().stop();
+                continue;
+            }
             LivingEntity target = mob.getTarget();
             if (target != null && HatAbilities.isFriendlyTo(owner, target)) {
                 mob.setTarget(null);
@@ -148,7 +167,26 @@ public final class BrainrotMinions {
                     mob.setTarget(wanted);
                 }
             }
+            // 没在打架就跟着主人走：超过 5 格走过来，超过 24 格直接传过去
+            if (mob.getTarget() == null && mob.level() == owner.level()) {
+                double distanceSq = mob.distanceToSqr(owner);
+                if (distanceSq > TELEPORT_AT * TELEPORT_AT) {
+                    teleportNear(mob, owner);
+                } else if (distanceSq > FOLLOW_BEGIN * FOLLOW_BEGIN) {
+                    // 史莱姆不认寻路、只认 MoveControl，所以两边都设一遍
+                    mob.getNavigation().moveTo(owner, 1.0D);
+                    mob.getMoveControl().setWantedPosition(owner.getX(), owner.getY(), owner.getZ(), 1.0D);
+                }
+            }
         }
+    }
+
+    /** 传送到主人身边（带一点随机偏移，免得几只叠在同一个点上）。 */
+    private static void teleportNear(Mob mob, LivingEntity owner) {
+        double x = owner.getX() + (mob.getRandom().nextDouble() - 0.5D) * 4.0D;
+        double z = owner.getZ() + (mob.getRandom().nextDouble() - 0.5D) * 4.0D;
+        mob.teleportTo(x, owner.getY(), z);
+        mob.getNavigation().stop();
     }
 
     /**
@@ -189,7 +227,43 @@ public final class BrainrotMinions {
             if (entity != null) {
                 entity.discard();
             }
+            SITTING.remove(entry.getKey());
             iterator.remove();
+        }
+    }
+
+    /** 命令：潜行 + 右键自家小怪 = 坐下 / 起立（和狗一样）。 */
+    @SubscribeEvent
+    public static void onInteract(PlayerInteractEvent.EntityInteract event) {
+        if (OWNERS.isEmpty() || !(event.getTarget() instanceof Mob mob)) {
+            return;
+        }
+        UUID ownerId = OWNERS.get(mob.getUUID());
+        Entity interactor = event.getEntity();
+        if (ownerId == null || !(interactor instanceof Player player)
+                || !ownerId.equals(player.getUUID())) {
+            return;
+        }
+        // 只有主人在潜行时右键才算命令，平时右键还是原版行为
+        if (!player.isShiftKeyDown()) {
+            return;
+        }
+        if (!SITTING.remove(mob.getUUID())) {
+            SITTING.add(mob.getUUID());
+            mob.getNavigation().stop();
+            mob.setTarget(null);
+        }
+        event.setCanceled(true);
+    }
+
+    /** 召唤物不掉落任何东西：一地史莱姆球既吵又没人捡。 */
+    @SubscribeEvent
+    public static void onDrops(LivingDropsEvent event) {
+        if (OWNERS.isEmpty()) {
+            return;
+        }
+        if (OWNERS.containsKey(event.getEntity().getUUID())) {
+            event.getDrops().clear();
         }
     }
 
