@@ -6,6 +6,7 @@ import net.minecraft.client.renderer.entity.player.PlayerRenderer;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.EntityRenderersEvent;
 import net.minecraftforge.client.event.RegisterGuiOverlaysEvent;
+import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
 import net.minecraftforge.client.event.RegisterParticleProvidersEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.ModList;
@@ -66,9 +67,19 @@ public final class HatModClient {
     public static void registerGuiOverlays(RegisterGuiOverlaysEvent event) {
         event.registerAboveAll("green_hearts",
                 (gui, graphics, partialTick, width, height) -> GreenHeartRender.render(graphics, width, height));
-        // 「脑蚀」的 No too late（逐词弹出）
-        event.registerAboveAll("brainrot_text",
-                (gui, graphics, partialTick, width, height) -> BrainrotText.render(graphics));
+        // 「脑蚀」打拍的判定轨道（拍点滑条 + PERFECT/GOOD/MISS 判定字）
+        event.registerAboveAll("qte_hud",
+                (gui, graphics, partialTick, width, height) -> QteHud.render(graphics));
+        // 「脑蚀」照射期的整屏紫色辉光（高光时刻的整体画面强化）
+        event.registerAboveAll("brainrot_glow",
+                (gui, graphics, partialTick, width, height) -> BrainrotGlow.render(graphics));
+    }
+
+    /** 打拍键（默认 V）和强制开链路键（默认 P）：注册进按键设置，玩家可以自己改。 */
+    @SubscribeEvent
+    public static void registerKeyMappings(RegisterKeyMappingsEvent event) {
+        event.register(QteHud.BEAT_TAP);
+        event.register(QteHud.FORCE_START);
     }
 
     /**

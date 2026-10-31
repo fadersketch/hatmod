@@ -1,0 +1,22 @@
+{
+  "display": {
+    "icon": {
+      "id": "hatmod:red_hat"
+    },
+    "title": {
+      "translate": "advancement.hatmod.immovable.title"
+    },
+    "description": {
+      "translate": "advancement.hatmod.immovable.description"
+    },
+    "frame": "goal",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "criteria": {
+    "impossible": {
+      "trigger": "minecraft:impossible"
+    }
+  }
+}

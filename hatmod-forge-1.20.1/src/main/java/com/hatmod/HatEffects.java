@@ -33,6 +33,10 @@ public final class HatEffects {
     /** 「神隐」：就是原版隐身，另加「定期甩掉已经锁上来的敌人」（图标颜色是偏冷的苍白）。 */
     public static final RegistryObject<MobEffect> VEIL = EFFECTS.register("veil", VeilEffect::new);
 
+    /** 「易伤」：受到的伤害 ×1.5（声波打出来的标记），图标是一颗裂开的红心。 */
+    public static final RegistryObject<MobEffect> VULNERABLE =
+            EFFECTS.register("vulnerable", VulnerableEffect::new);
+
     private HatEffects() {
     }
 
@@ -49,6 +53,17 @@ public final class HatEffects {
     private static final class VeilEffect extends MobEffect {
         private VeilEffect() {
             super(MobEffectCategory.BENEFICIAL, 0xE9F3FF);
+        }
+    }
+
+    /**
+     * 「易伤」本体：**纯标记**，真正的伤害倍率在 {@code HatProtection} 里乘。
+     *
+     * <p>做成效果是为了让被声波打到的敌人身上**看得见**这个状态，而不是闷在代码里。
+     */
+    private static final class VulnerableEffect extends MobEffect {
+        private VulnerableEffect() {
+            super(MobEffectCategory.HARMFUL, 0xFF5A5A);
         }
     }
 }

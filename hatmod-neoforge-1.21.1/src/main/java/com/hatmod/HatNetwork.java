@@ -45,10 +45,14 @@ public final class HatNetwork {
     }
 
     private static void onRegisterPayloads(RegisterPayloadHandlersEvent event) {
-        // 版本 "4"：Settings 的同步/更新包都加了「脑蚀每帧伤害倍率」字段。
+        // 版本 "5"：Settings 的同步/更新包都加了「脑蚀每帧伤害倍率」字段。
+        // 版本 "6"：加了「打拍」的两个包（QteTapPayload / QteStatePayload）。
+        // 版本 "8"：加了闪避通知包（QteDodgePayload）。
+        // 版本 "10"：加了「自动打拍」调试开关（AutoTapPayload）。
+        // 版本 "11"：同一个包加了反向（S2C），进服时把开关状态同步回客户端。
         // 版本不同时 NeoForge 会拒绝握手，而不是拿错值跑。
         // 以后只要改动任何包的字段布局，都要把这个版本号加一。
-        var registrar = event.registrar("4");
+        var registrar = event.registrar("11");
         registrar.playToClient(
                 BeamTargetPayload.TYPE,
                 BeamTargetPayload.STREAM_CODEC,
@@ -87,15 +91,57 @@ public final class HatNetwork {
                 BrainrotSpinPayload.STREAM_CODEC,
                 (payload, context) -> context.enqueueWork(
                         () -> com.hatmod.client.BrainrotSpin.set(payload.wearerId(), payload.spin())));
-        registrar.playToClient(
-                BrainrotTextPayload.TYPE,
-                BrainrotTextPayload.STREAM_CODEC,
-                (payload, context) -> context.enqueueWork(
-                        () -> com.hatmod.client.BrainrotText.show()));
         registrar.playToServer(
                 SettingsUpdatePayload.TYPE,
                 SettingsUpdatePayload.STREAM_CODEC,
                 (payload, context) -> context.enqueueWork(() -> handleUpdate(payload, context)));
+        // 「打拍」：客户端报「我按了一下」（带 HUD 钟走到几刻），服务端判 PERFECT/GOOD/白按
+        registrar.playToServer(
+                QteTapPayload.TYPE,
+                QteTapPayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(() -> {
+                    if (context.player() instanceof ServerPlayer player) {
+                        BrainrotQte.tap(player, payload.clientAge());
+                    }
+                }));
+        // 「强制开始链路」：空包，服务端自己看玩家戴的是哪顶帽子
+        registrar.playToServer(
+                ForceStartPayload.TYPE,
+                ForceStartPayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(() -> {
+                    if (context.player() instanceof ServerPlayer player) {
+                        handleForceStart(player);
+                    }
+                }));
+        // 「自动打拍」调试开关（调参器里点）：C2S，一个布尔
+        registrar.playToServer(
+                AutoTapPayload.TYPE,
+                AutoTapPayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(() -> {
+                    if (context.player() instanceof ServerPlayer player) {
+                        BrainrotQte.setAutoTap(player, payload.on());
+                    }
+                }));
+        // 进服时服务端告诉客户端「你这个（落盘的）自动打拍开关还开着」。
+        // 必须是**另一个** payload：NeoForge 不允许同一个 type 在两个方向各注册一次。
+        registrar.playToClient(
+                AutoTapStatePayload.TYPE,
+                AutoTapStatePayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(
+                        () -> com.hatmod.client.BrainrotQteClient.setAutoTap(payload.on())));
+        // 「闪避落空」：只发给被闪掉这一击的玩家，HUD 画紫边 + 大字
+        registrar.playToClient(
+                QteDodgePayload.TYPE,
+                QteDodgePayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(
+                        () -> com.hatmod.client.BrainrotQteClient.onDodge()));
+        // 「打拍」的状态回包：连击数 + 最近一次判定，HUD 拿它画判定条
+        registrar.playToClient(
+                QteStatePayload.TYPE,
+                QteStatePayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(
+                        () -> com.hatmod.client.BrainrotQteClient.onState(
+                                payload.combo(), payload.rating(), payload.dodges())));
     }
 
     /** 通知客户端某个戴帽者「开始/停止照射」，以及它锁定了谁（每道光柱一个 id）。 */
@@ -117,9 +163,47 @@ public final class HatNetwork {
                 wearer, new BrainrotSpinPayload(wearer.getId(), spin));
     }
 
-    /** 「脑蚀」的屏幕文字（No too late）：只发给戴帽者自己。 */
-    public static void sendBrainrotText(ServerPlayer player) {
-        PacketDistributor.sendToPlayer(player, new BrainrotTextPayload());
+    /** 「打拍」的最新判定（连击 / PERFECT-GOOD-MISS）：只发给戴帽者自己，HUD 用它画判定字。 */
+    public static void sendQteState(ServerPlayer player, int combo, int rating, int dodges) {
+        PacketDistributor.sendToPlayer(player, new QteStatePayload(combo, rating, dodges));
+    }
+
+    /** 客户端：按了一下打拍（带 HUD 的钟走到几刻）。 */
+    /** 「闪避落空」：只告诉挨打的那一个玩家，让他的屏幕闪一下紫边。 */
+    public static void sendQteDodge(ServerPlayer player) {
+        PacketDistributor.sendToPlayer(player, new QteDodgePayload());
+    }
+
+    /** 客户端：按 P 请求强制开一轮（不看附近有没有敌人）。 */
+    public static void sendForceStart() {
+        PacketDistributor.sendToServer(new ForceStartPayload());
+    }
+
+    /**
+     * 「强制开始链路」：戴着脑蚀帽就开脑蚀那一轮（音乐 + Teto + 时间线），
+     * 否则按牛仔帽直接进蓄力。两样都没戴就什么也不发生。
+     */
+    private static void handleForceStart(ServerPlayer player) {
+        if (player == null) {
+            return;
+        }
+        if (!BrainrotCycle.forceStart(player)) {
+            HatAbilities.forceStart(player);
+        }
+    }
+
+    public static void sendQteTap(int clientAge) {
+        PacketDistributor.sendToServer(new QteTapPayload(clientAge));
+    }
+
+    /** 客户端：调参器里切换「自动打拍」。 */
+    public static void sendAutoTap(boolean on) {
+        PacketDistributor.sendToServer(new AutoTapPayload(on));
+    }
+
+    /** 服务端：把「自动打拍」的当前状态告诉某个玩家（进服时同步，界面显示才对）。 */
+    public static void sendAutoTapTo(ServerPlayer player, boolean on) {
+        PacketDistributor.sendToPlayer(player, new AutoTapStatePayload(on));
     }
 
     /** 只发给某一个玩家：某个实体此刻的自转状态（玩家刚进入视野时补发）。 */
@@ -559,16 +643,110 @@ public final class HatNetwork {
         }
     }
 
+    /** 「自动打拍」（调参器里的调试开关）：纯调试，用过的一轮不发成就。 */
+    public record AutoTapPayload(boolean on) implements CustomPacketPayload {
+
+        public static final CustomPacketPayload.Type<AutoTapPayload> TYPE =
+                new CustomPacketPayload.Type<>(HatMod.id("auto_tap"));
+
+        public static final StreamCodec<RegistryFriendlyByteBuf, AutoTapPayload> STREAM_CODEC =
+                StreamCodec.composite(ByteBufCodecs.BOOL, AutoTapPayload::on, AutoTapPayload::new);
+
+        @Override
+        public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
     /**
-     * 「脑蚀」的屏幕文字（「No too late」逐个弹出）。没有字段 —— 收到就是弹一次。
+     * 同一个开关的 <b>服务端 → 客户端</b> 方向：进服时把落盘的状态同步过来。
+     *
+     * <p>为什么不能复用 {@link AutoTapPayload}：NeoForge 的 payload 注册表是
+     * 「一个 type 只能注册一次」，C2S 注册过了再注册 S2C 会直接
+     * {@code Cannot register payload ... as it is already registered}（启动即崩）。
      */
-    public record BrainrotTextPayload() implements CustomPacketPayload {
+    public record AutoTapStatePayload(boolean on) implements CustomPacketPayload {
 
-        public static final CustomPacketPayload.Type<BrainrotTextPayload> TYPE =
-                new CustomPacketPayload.Type<>(HatMod.id("brainrot_text"));
+        public static final CustomPacketPayload.Type<AutoTapStatePayload> TYPE =
+                new CustomPacketPayload.Type<>(HatMod.id("auto_tap_state"));
 
-        public static final StreamCodec<RegistryFriendlyByteBuf, BrainrotTextPayload> STREAM_CODEC =
-                StreamCodec.unit(new BrainrotTextPayload());
+        public static final StreamCodec<RegistryFriendlyByteBuf, AutoTapStatePayload> STREAM_CODEC =
+                StreamCodec.composite(ByteBufCodecs.BOOL, AutoTapStatePayload::on, AutoTapStatePayload::new);
+
+        @Override
+        public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    /**
+     * 「打拍」按下的一下（C2S）：{@code clientAge} 是客户端 HUD 的钟走到几刻 ——
+     * 玩家照着 HUD 按的，就按 HUD 的钟判，服务端只做漂移校验（差太多就用自己的钟）。
+     */
+    public record QteTapPayload(int clientAge) implements CustomPacketPayload {
+
+        public static final CustomPacketPayload.Type<QteTapPayload> TYPE =
+                new CustomPacketPayload.Type<>(HatMod.id("qte_tap"));
+
+        public static final StreamCodec<RegistryFriendlyByteBuf, QteTapPayload> STREAM_CODEC =
+                StreamCodec.composite(
+                        ByteBufCodecs.VAR_INT, QteTapPayload::clientAge,
+                        QteTapPayload::new);
+
+        @Override
+        public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    /**
+     * 「打拍」的最新状态（S2C）：连击数 + 最近一次判定（PERFECT / GOOD / MISS）。
+     * 只在判定发生（或 MISS）时发一次，HUD 拿它画判定字。
+     */
+    public record QteStatePayload(int combo, int rating, int dodges) implements CustomPacketPayload {
+
+        public static final CustomPacketPayload.Type<QteStatePayload> TYPE =
+                new CustomPacketPayload.Type<>(HatMod.id("qte_state"));
+
+        public static final StreamCodec<RegistryFriendlyByteBuf, QteStatePayload> STREAM_CODEC =
+                StreamCodec.composite(
+                        ByteBufCodecs.VAR_INT, QteStatePayload::combo,
+                        ByteBufCodecs.VAR_INT, QteStatePayload::rating,
+                        ByteBufCodecs.VAR_INT, QteStatePayload::dodges,
+                        QteStatePayload::new);
+
+        @Override
+        public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    /**
+     * 「闪避落空」的通知（S2C，空包）：只发给被闪掉这一击的玩家，
+     * HUD 收到就画一整屏紫边 + 大字「闪避」。
+     */
+    public record QteDodgePayload() implements CustomPacketPayload {
+
+        public static final CustomPacketPayload.Type<QteDodgePayload> TYPE =
+                new CustomPacketPayload.Type<>(HatMod.id("qte_dodge"));
+
+        public static final StreamCodec<RegistryFriendlyByteBuf, QteDodgePayload> STREAM_CODEC =
+                StreamCodec.unit(new QteDodgePayload());
+
+        @Override
+        public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    /** 「强制开始链路」请求（C2S，空包）：服务端按玩家戴的帽子决定开哪一轮。 */
+    public record ForceStartPayload() implements CustomPacketPayload {
+
+        public static final CustomPacketPayload.Type<ForceStartPayload> TYPE =
+                new CustomPacketPayload.Type<>(HatMod.id("force_start"));
+
+        public static final StreamCodec<RegistryFriendlyByteBuf, ForceStartPayload> STREAM_CODEC =
+                StreamCodec.unit(new ForceStartPayload());
 
         @Override
         public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {

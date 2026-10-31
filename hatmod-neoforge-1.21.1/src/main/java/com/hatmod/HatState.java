@@ -30,6 +30,12 @@ final class HatState {
     int flash;
     /** 黑帽：本轮蓄力还剩几次「瞬移躲伤害」可用（基础次数 + 附魔「闪避」）。 */
     int blinks;
+    /** 「神本无相」：本轮蓄力里已经真的闪掉几次。 */
+    int chargeBlinks;
+    /** 「身轻如燕」：这一次照射里用光柱击杀几个。 */
+    int flashKills;
+    /** 「不动如山」：这次蓄力里有没有挨到过真伤。 */
+    boolean hitWhileCharging;
     /** 黑帽：本轮照射还剩几次「瞬移躲伤害」可用（附魔「残影」给）。 */
     int flashBlinks;
     /** 附魔「掌控」本轮蓄力是否已经触发过（每轮只触发一次）。 */
@@ -49,6 +55,9 @@ final class HatState {
         this.charge = 0;
         this.flash = 0;
         this.blinks = 0;
+        this.chargeBlinks = 0;
+        this.flashKills = 0;
+        this.hitWhileCharging = false;
         this.flashBlinks = 0;
         this.dominionFired = false;
         this.beamSynced = false;

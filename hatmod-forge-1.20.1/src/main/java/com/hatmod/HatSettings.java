@@ -170,6 +170,14 @@ public final class HatSettings {
          * <p>调试用：设成某条颜色后，「全」每轮都走那一条，方便逐条核对时长 / BGM / 颜色。
          */
         public String forcedRoute = ROUTE_RANDOM;
+
+        /**
+         * 调试开关「自动打拍」的玩家名单（UUID 字符串）。
+         *
+         * <p>按玩家记而不是全局：联机时谁打开就只影响谁。字段带初始化值，
+         * 老配置里没有它时会落成空表，<b>不需要动 {@link #CONFIG_VERSION}</b>。
+         */
+        public java.util.List<String> autoTapPlayers = new java.util.ArrayList<>();
     }
 
     /** 一顶帽子的一组参数。字段 public、有默认构造，是给 Gson 直接读写用的。 */
@@ -380,6 +388,30 @@ public final class HatSettings {
         save();
     }
 
+    // ------------------------------------------------------------------
+    // 调试开关（落盘，重启后还在）
+    // ------------------------------------------------------------------
+
+    /** 磁盘上「自动打拍」的玩家名单。 */
+    private static final java.util.Set<java.util.UUID> DEBUG_AUTO_TAP = new java.util.HashSet<>();
+
+    /** 这个玩家上次退出前有没有开着「自动打拍」。 */
+    public static synchronized boolean debugAutoTap(java.util.UUID player) {
+        ensureLoaded();
+        return DEBUG_AUTO_TAP.contains(player);
+    }
+
+    /** 记下「自动打拍」开关并立刻落盘（进服时由 {@code BrainrotCycle} 恢复）。 */
+    public static synchronized void setDebugAutoTap(java.util.UUID player, boolean on) {
+        ensureLoaded();
+        if (on) {
+            DEBUG_AUTO_TAP.add(player);
+        } else {
+            DEBUG_AUTO_TAP.remove(player);
+        }
+        save();
+    }
+
     /** 恢复这顶帽子的出厂数值（{@link HatType} 里那一份）。 */
     public static synchronized void resetToDefaults(HatType type) {
         get(type).reset(type);
@@ -409,6 +441,7 @@ public final class HatSettings {
         routeDamageRed = DEFAULT_ROUTE_DAMAGE_RED;
         forcedRoute = ROUTE_RANDOM;
         brainrotDamageScale = DEFAULT_BRAINROT_DAMAGE_SCALE;
+        DEBUG_AUTO_TAP.clear();
         for (HatType type : HatType.values()) {
             ENTRIES.put(type, new Entry(type));
         }
@@ -435,6 +468,16 @@ public final class HatSettings {
             routeDamageRed = clamp(fromDisk.routeDamageRed, MIN_DAMAGE, MAX_DAMAGE);
             forcedRoute = normalizeForcedRoute(fromDisk.forcedRoute);
             brainrotDamageScale = clamp(fromDisk.brainrotDamageScale, MIN_DAMAGE, MAX_DAMAGE);
+            DEBUG_AUTO_TAP.clear();
+            if (fromDisk.autoTapPlayers != null) {
+                for (String raw : fromDisk.autoTapPlayers) {
+                    try {
+                        DEBUG_AUTO_TAP.add(java.util.UUID.fromString(raw));
+                    } catch (IllegalArgumentException ignored) {
+                        // 手改坏了就当没这一行
+                    }
+                }
+            }
             if (fromDisk.hats == null) {
                 return;
             }
@@ -466,6 +509,10 @@ public final class HatSettings {
         out.routeDamageRed = routeDamageRed;
         out.forcedRoute = forcedRoute;
         out.brainrotDamageScale = brainrotDamageScale;
+        out.autoTapPlayers = new java.util.ArrayList<>();
+        for (java.util.UUID id : DEBUG_AUTO_TAP) {
+            out.autoTapPlayers.add(id.toString());
+        }
         out.hats = new LinkedHashMap<>();
         for (HatType type : HatType.values()) {
             Entry entry = ENTRIES.get(type);

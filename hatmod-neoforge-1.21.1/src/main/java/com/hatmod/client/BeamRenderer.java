@@ -80,6 +80,15 @@ public final class BeamRenderer {
     /** 最外层圆台在末端的半宽（格）＝ 散射范围 */
     private static final float END_RADIUS = 3.4F;
     /**
+     * 「脑蚀」的光柱尺寸：**更远、更粗**。
+     *
+     * <p>射程 40 格、末端半宽 12 格（整锥约 33°）—— 远看是两根张开的喇叭，
+     * 而不是两根细光条。服务端 {@code BrainrotCycle.BEAM_LENGTH / BEAM_END_RADIUS}
+     * 必须跟这两个值保持一致。
+     */
+    private static final float BRAINROT_RANGE = 40.0F;
+    private static final float BRAINROT_END_RADIUS = 12.0F;
+    /**
      * 灯口处的亮度（0~1）。
      *
      * <p>加色混合是 {@code ONE,ONE}，透明度不参与叠加，所以亮度只能写在顶点的颜色里。
@@ -113,8 +122,8 @@ public final class BeamRenderer {
     private static final float[] TINT_BLACK = {0.92F, 0.94F, 1.10F};
     private static final float[] TINT_WHITE = {1.00F, 1.00F, 1.00F};
     private static final float[] TINT_RED = {1.10F, 0.95F, 0.90F};
-    /** 「脑蚀」：偏紫，和它那套阴森的氛围配套。 */
-    private static final float[] TINT_BRAINROT = {0.82F, 0.48F, 1.10F};
+    /** 「脑蚀」：偏紫、高饱和 —— 这是整首曲子的高光时刻，要压得住整个画面。 */
+    private static final float[] TINT_BRAINROT = {1.15F, 0.55F, 1.55F};
     /** 「全」：三色合一，取偏暖金的一档，一眼和另外三顶区分开。 */
     private static final float[] TINT_ALL = {1.08F, 1.02F, 0.86F};
 
@@ -228,7 +237,19 @@ public final class BeamRenderer {
 
                 poseStack.pushPose();
                 poseStack.translate(origin.x, origin.y, origin.z);
-                float length = (float) (RANGE - forward);
+                // 「脑蚀」走它自己那套更大的尺寸，其余帽子还是原来的 24 格细光柱
+                boolean brainrot = HatAbilities.hatStack(living).is(com.hatmod.HatItems.BRAIN_HAT.get());
+                float range = brainrot ? BRAINROT_RANGE : (float) RANGE;
+                float maxEndRadius = brainrot ? BRAINROT_END_RADIUS : END_RADIUS;
+                float brightnessScale = brainrot ? 1.9F : 1.0F;
+                // 打中一拍后的「涌动」：只有本地玩家能打拍，所以只有自己的脑蚀光柱会瞬间变长变粗
+                if (brainrot && living == mc.player) {
+                    float[] surge = new float[2];
+                    BrainrotQteClient.surgeScale(surge);
+                    range *= surge[0];
+                    maxEndRadius *= surge[1];
+                }
+                float length = range - (float) forward;
                 // 多道光柱用小角度错开贴图相位，免得完全重合时分不出是几条
                 float spin = beams > 1 ? (float) (Math.PI * 2.0 * i / beams) : 0.0F;
 
@@ -249,8 +270,10 @@ public final class BeamRenderer {
                 // 每层都是从同一个灯口张开到自己的末端半径，加色叠起来就是一团体积光。
                 for (int layer = 0; layer < CONE_LAYERS; layer++) {
                     float k = (float) layer / (CONE_LAYERS - 1);
-                    float brightness = LAYER_BRIGHTNESS * (1.0F + (OUTER_BRIGHTNESS_SCALE - 1.0F) * k);
-                    float endRadius = END_RADIUS * (layer + 1) / (float) CONE_LAYERS;
+                    // 「脑蚀」整体再亮一档（它出场的那几段就是整首曲子的高光）
+                float brightness = LAYER_BRIGHTNESS * brightnessScale
+                        * (1.0F + (OUTER_BRIGHTNESS_SCALE - 1.0F) * k);
+                    float endRadius = maxEndRadius * (layer + 1) / (float) CONE_LAYERS;
                     drawFrustum(buffers, matrix, length, brightness, endRadius, v0, v1, tint);
                 }
 

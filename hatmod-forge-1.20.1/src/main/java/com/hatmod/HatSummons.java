@@ -6,6 +6,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.phys.AABB;
@@ -17,6 +18,7 @@ import net.minecraftforge.registries.DeferredRegister;
 import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraftforge.registries.RegistryObject;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -124,11 +126,31 @@ public final class HatSummons {
     // 后室 Teto（「脑蚀」专用）
     // ------------------------------------------------------------------
 
-    /** 「脑蚀」一轮开始时在戴帽者周围放 4 只 Teto。 */
+    /** 单个玩家最多同时存在几只 Teto。 */
+    public static final int TETO_MAX_PER_PLAYER = 4;
+
+    /**
+     * 「脑蚀」一轮开始时在戴帽者周围放 4 只 Teto。
+     *
+     * <p>**先数已经在场的**（重进存档、上一局没收干净、刷怪蛋放出来的都算），
+     * 只补到 {@link #TETO_MAX_PER_PLAYER} 只为止 —— 不会再出现「旧的 4 只没走、新的又来了 4 只」。
+     */
     static void spawnTetos(ServerLevel level, LivingEntity owner) {
         EntityType<Teto> type = TETO.get();
-        double step = Math.PI * 2.0D / TETO_COUNT;
-        for (int i = 0; i < TETO_COUNT; i++) {
+        // 先把**全场**属于这个玩家的 Teto 收干净（不管多远）：上一轮没清掉的、
+        // 重进存档留下的、刷怪蛋放的都算 —— 这样「每人最多 4 只」才是硬保证，
+        // 而不是「附近 128 格内最多 4 只」（远处的照样活着，回来就变成 8 只）。
+        List<Teto> leftovers = new ArrayList<>();
+        for (Entity entity : level.getAllEntities()) {
+            if (entity instanceof Teto teto && teto.isOwnedBy(owner)) {
+                leftovers.add(teto);
+            }
+        }
+        for (Teto teto : leftovers) {
+            teto.discard();
+        }
+        double step = Math.PI * 2.0D / TETO_MAX_PER_PLAYER;
+        for (int i = 0; i < TETO_MAX_PER_PLAYER; i++) {
             Teto teto = type.create(level);
             if (teto == null) {
                 continue;

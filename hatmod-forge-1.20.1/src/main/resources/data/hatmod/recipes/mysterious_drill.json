@@ -3,15 +3,25 @@
   "category": "equipment",
   "pattern": [
     "LEL",
-    "EDN",
-    "NSN"
+    "NDN",
+    " S "
   ],
   "key": {
-    "L": { "item": "minecraft:leather" },
-    "E": { "item": "minecraft:echo_shard" },
-    "D": { "item": "minecraft:black_dye" },
-    "N": { "item": "minecraft:nether_star" },
-    "S": { "item": "minecraft:sculk_catalyst" }
+    "L": {
+      "item": "minecraft:leather"
+    },
+    "E": {
+      "item": "minecraft:echo_shard"
+    },
+    "N": {
+      "item": "minecraft:nether_star"
+    },
+    "D": {
+      "item": "minecraft:black_dye"
+    },
+    "S": {
+      "item": "minecraft:sculk_catalyst"
+    }
   },
   "result": {
     "item": "hatmod:mysterious_drill"

@@ -2,6 +2,7 @@ package com.hatmod.client;
 
 import com.hatmod.HatNetwork;
 import com.hatmod.HatSettings;
+import com.hatmod.HatItems;
 import com.hatmod.HatType;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.gui.GuiGraphics;
@@ -9,6 +10,8 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 
 /**
  * 牛仔帽调参界面。
@@ -42,6 +45,15 @@ public class HatTunerScreen extends Screen {
             "hatmod.tuner.type",
     };
 
+    /** 「脑蚀」页只显示前三行：每帧伤害倍率 / Teto 帧步进 / Teto 画质。 */
+    private static final String[] BRAINROT_KEYS = {
+            "hatmod.tuner.brainrotScale",
+            "hatmod.tuner.tetoFrameStep",
+            "hatmod.tuner.tetoQuality",
+    };
+    /** 「脑蚀」页显示几行。 */
+    private static final int BRAINROT_ROWS = BRAINROT_KEYS.length;
+
     /** 选中「全」时，前三个框改成这三条路线的帧伤（标签也跟着换）。 */
     private static final String[] ALL_ROUTE_KEYS = {
             "hatmod.tuner.route.black",
@@ -73,6 +85,8 @@ public class HatTunerScreen extends Screen {
 
     /** 「全」页专用：强制路线的循环按钮（随机 → 黑 → 白 → 红）。 */
     private Button forcedRouteButton;
+    /** 「自动打拍」调试开关：只在「脑蚀」页出现。 */
+    private Button autoTapButton;
     /** 强制路线的待保存值：{@code random} / black / white / red。 */
     private String forcedRoute;
 
@@ -86,6 +100,12 @@ public class HatTunerScreen extends Screen {
     /** 全局开关「自己的 BGM 优先」在界面上的待保存状态。 */
     private boolean ownBgmPriority;
     private Button ownBgmButton;
+
+    /** 「合成表」页开着没有。 */
+    private boolean showRecipes;
+    private Button recipeButton;
+    /** 合成表翻到第几页（0 起）。 */
+    private int recipePage;
 
     public HatTunerScreen() {
         super(Component.translatable("hatmod.tuner.title"));
@@ -173,12 +193,20 @@ public class HatTunerScreen extends Screen {
 
         // 底部按钮
         int bottom = bottomY();
+        // 只留「保存 / 恢复默认」两个：关界面按 Esc 就行，那个「完成」是多余的
         addRenderableWidget(Button.builder(Component.translatable("hatmod.tuner.save"), button -> save())
-                .bounds(this.width / 2 - 156, bottom, 100, BUTTON_H).build());
+                .bounds(this.width / 2 - 106, bottom, 100, BUTTON_H).build());
         addRenderableWidget(Button.builder(Component.translatable("hatmod.tuner.reset"), button -> resetFields())
-                .bounds(this.width / 2 - 50, bottom, 100, BUTTON_H).build());
-        addRenderableWidget(Button.builder(Component.translatable("gui.done"), button -> onClose())
-                .bounds(this.width / 2 + 56, bottom, 100, BUTTON_H).build());
+                .bounds(this.width / 2 + 6, bottom, 100, BUTTON_H).build());
+
+        // 「合成表」：左上角一个开关，点开就把整条合成链画成工作台
+        this.recipeButton = Button.builder(recipeLabel(), button -> {
+                    this.showRecipes = !this.showRecipes;
+                    button.setMessage(recipeLabel());
+                })
+                .bounds(left(), 6, 70, BUTTON_H)
+                .build();
+        addRenderableWidget(this.recipeButton);
 
         // 全局开关「自己的 BGM 优先」：放在右上角，和标题同一行，不占用中间排版
         this.ownBgmPriority = ClientHatSettings.ownBgmPriority();
@@ -196,6 +224,13 @@ public class HatTunerScreen extends Screen {
             button.setMessage(forcedRouteLabel());
         }).bounds(this.width / 2 - 90, FORCED_ROW_Y, 180, BUTTON_H).build();
         addRenderableWidget(this.forcedRouteButton);
+
+        // 「脑蚀」页专用：自动打拍（调试用）。它和「强制路线」抢同一行，但两者不会同时出现。
+        this.autoTapButton = Button.builder(autoTapLabel(), button -> {
+            BrainrotQteClient.toggleAutoTap();
+            button.setMessage(autoTapLabel());
+        }).bounds(this.width / 2 - 90, FORCED_ROW_Y, 180, BUTTON_H).build();
+        addRenderableWidget(this.autoTapButton);
 
         fillFromSelection();
     }
@@ -247,7 +282,10 @@ public class HatTunerScreen extends Screen {
     private void fillFromSelection() {
         if (this.brainrotTab) {
             fields[0].setValue(format(ClientHatSettings.brainrotDamageScale()));
-            for (int i = 1; i < fields.length; i++) {
+            // 第二、三行是 Teto 的渲染参数（纯客户端，不走服务端）：帧步进 / 画质
+            fields[1].setValue(Integer.toString(TetoRenderSettings.frameStep()));
+            fields[2].setValue(Integer.toString(TetoRenderSettings.quality()));
+            for (int i = BRAINROT_ROWS; i < fields.length; i++) {
                 fields[i].setValue("");
             }
             setFieldVisibility();
@@ -285,10 +323,10 @@ public class HatTunerScreen extends Screen {
         updateButtons();
     }
 
-    /** 「脑蚀」页只留第一行；其它页六行全显示。 */
+    /** 「脑蚀」页只留前三行；其它页六行全显示。 */
     private void setFieldVisibility() {
         for (int i = 0; i < fields.length; i++) {
-            fields[i].visible = !this.brainrotTab || i == 0;
+            fields[i].visible = !this.brainrotTab || i < BRAINROT_ROWS;
         }
     }
 
@@ -303,12 +341,27 @@ public class HatTunerScreen extends Screen {
         if (this.brainrotButton != null) {
             this.brainrotButton.active = !this.brainrotTab;
         }
+        if (this.autoTapButton != null) {
+            this.autoTapButton.visible = this.brainrotTab;
+            this.autoTapButton.active = this.brainrotTab;
+            this.autoTapButton.setMessage(autoTapLabel());
+        }
+    }
+
+    /** 自动打拍按钮上的文字：名字 + 当前开关。 */
+    private Component autoTapLabel() {
+        return Component.translatable("hatmod.tuner.autoTap")
+                .append(Component.literal(": "))
+                .append(Component.translatable(
+                        BrainrotQteClient.autoTap() ? "hatmod.tuner.on" : "hatmod.tuner.off"));
     }
 
     /** 「恢复默认」只改界面，点保存才真的生效。 */
     private void resetFields() {
         if (this.brainrotTab) {
             fields[0].setValue(format(HatSettings.DEFAULT_BRAINROT_DAMAGE_SCALE));
+            fields[1].setValue(Integer.toString(TetoRenderSettings.DEFAULT_FRAME_STEP));
+            fields[2].setValue(Integer.toString(TetoRenderSettings.DEFAULT_QUALITY));
             return;
         }
         if (this.selected == HatType.ALL) {
@@ -407,10 +460,15 @@ public class HatTunerScreen extends Screen {
      */
     private void saveBrainrot() {
         Float scale = parseFloat(0);
-        if (scale == null) {
+        Integer frameStep = parseInt(1);
+        Integer quality = parseInt(2);
+        if (scale == null || frameStep == null || quality == null) {
             complain("hatmod.tuner.badNumber");
             return;
         }
+        // 这两项是纯客户端的渲染参数，直接落 config/hatmod-client.json，不用发给服务端
+        TetoRenderSettings.setFrameStep(frameStep);
+        TetoRenderSettings.setQuality(quality);
         ClientHatSettings.Snapshot snapshot = ClientHatSettings.get(this.selected);
         HatNetwork.sendSettingsUpdate(this.selected, snapshot.chargeTicks, snapshot.flashTicks,
                 snapshot.damagePerTick, snapshot.healthDamageRatio, snapshot.healthDamageFloor,
@@ -489,11 +547,11 @@ public class HatTunerScreen extends Screen {
         boolean all = this.selected == HatType.ALL;
         for (int i = 0; i < FIELD_KEYS.length; i++) {
             // 「脑蚀」页只有第一行；「全」页前三个框的标签换成黑/白/红三条路线的帧伤
-            if (this.brainrotTab && i > 0) {
+            if (this.brainrotTab && i >= BRAINROT_ROWS) {
                 continue;
             }
             String key = this.brainrotTab
-                    ? "hatmod.tuner.brainrotScale"
+                    ? BRAINROT_KEYS[i]
                     : (all && i < ALL_ROUTE_KEYS.length ? ALL_ROUTE_KEYS[i] : FIELD_KEYS[i]);
             int y = rowY(i) + (FIELD_H - this.font.lineHeight) / 2 + 1;
             graphics.drawString(this.font, Component.translatable(key), labelX, y, 0xA0A0A0);
@@ -502,13 +560,200 @@ public class HatTunerScreen extends Screen {
         // 底部按钮上方那一行：平时写正在编辑哪顶，选中「全」时换成它自己那句说明
         // （前三个框的含义 + 蓄力/照射为什么不在这一页调）。只占一行，不会顶到按钮。
         Component status = this.brainrotTab
-                ? Component.translatable("hatmod.tuner.brainrotNote")
+                // 「脑蚀」页直接把 Teto 的实际情况写出来：多少帧/秒、多大分辨率
+                ? Component.literal(TetoRenderSettings.describe())
                 : all
                 ? Component.translatable("hatmod.tuner.allRouteNote")
                 : Component.translatable("hatmod.tuner.editing",
                         Component.translatable("hatmod.tuner.hat." + this.selected.id()));
         graphics.drawCenteredString(this.font, status, this.width / 2, statusY(),
                 all ? 0xB06060 : 0x808080);
+
+        if (this.showRecipes) {
+            renderRecipes(graphics);
+        }
+    }
+
+    private Component recipeLabel() {
+        return Component.translatable(this.showRecipes
+                ? "hatmod.tuner.recipesBack" : "hatmod.tuner.recipes");
+    }
+
+    /** 配方格：钻头用 L/E/N/D/S，帽子用 T（= 钻头）。 */
+    private static ItemStack recipeItem(char key) {
+        switch (key) {
+            case 'L':
+                return new ItemStack(Items.LEATHER);
+            case 'B':
+                return new ItemStack(Items.BLACK_DYE);
+            case 'W':
+                return new ItemStack(Items.WHITE_DYE);
+            case 'R':
+                return new ItemStack(Items.RED_DYE);
+            case 'E':
+                return new ItemStack(Items.ECHO_SHARD);
+            case 'N':
+                return new ItemStack(Items.NETHER_STAR);
+            case 'D':
+                return new ItemStack(Items.BLACK_DYE);
+            case 'S':
+                return new ItemStack(Items.SCULK_CATALYST);
+            case 'T':
+                return new ItemStack(HatItems.MYSTERIOUS_DRILL.get());
+            default:
+                return ItemStack.EMPTY;
+        }
+    }
+
+    /** 合成表一共几页（每页两个配方）。 */
+    private static final int RECIPE_PAGES = 3;
+
+    /**
+     * 合成表页：把**全部帽子**的合成链画成真正的 3×3 工作台。
+     *
+     * <p>第 1 页：脑蚀那条链（材料 → 神秘红毛钻头 → 脑蚀）；
+     * 第 2 页：黑 / 白（同一套版型，只换染料）；
+     * 第 3 页：红 / 全（「全」是三顶帽子的融合，位置随意，不限定 3×3 摆位）。
+     * 用底部的 ‹ › 翻页。
+     */
+    private void renderRecipes(GuiGraphics graphics) {
+        graphics.fill(0, 0, this.width, this.height, 0xC008080C);
+        int panelW = Math.min(340, this.width - 16);
+        int panelH = Math.min(210, this.height - 24);
+        int x0 = (this.width - panelW) / 2;
+        int y0 = (this.height - panelH) / 2;
+        graphics.fill(x0, y0, x0 + panelW, y0 + panelH, 0xFF15151C);
+        graphics.fill(x0, y0, x0 + panelW, y0 + 1, 0xFF8B5CF6);
+        graphics.fill(x0, y0 + panelH - 1, x0 + panelW, y0 + panelH, 0xFF8B5CF6);
+        graphics.drawCenteredString(this.font, Component.translatable("hatmod.tuner.recipesTitle"),
+                this.width / 2, y0 + 6, 0xFFFFFF);
+
+        int cell = 22;
+        int gridX = x0 + 18;
+        int firstY = y0 + 24;
+        int secondY = firstY + cell * 3 + 22;
+        int page = Math.max(0, Math.min(RECIPE_PAGES - 1, this.recipePage));
+
+        String note;
+        if (page == 0) {
+            drawCraftingRow(graphics, gridX, firstY, cell, new String[]{"LEL", "NDN", " S "},
+                    new ItemStack(HatItems.MYSTERIOUS_DRILL.get()),
+                    Component.translatable("hatmod.tuner.recipeDrill"));
+            drawCraftingRow(graphics, gridX, secondY, cell, new String[]{" T ", "TTT"},
+                    new ItemStack(HatItems.BRAIN_HAT.get()),
+                    Component.translatable("hatmod.tuner.recipeHat"));
+            note = "hatmod.tuner.recipeNote";
+        } else if (page == 1) {
+            drawCraftingRow(graphics, gridX, firstY, cell, new String[]{"LLL", "LBN", "NNN"},
+                    new ItemStack(HatItems.BLACK_HAT.get()),
+                    Component.translatable("hatmod.tuner.hat.black_hat"));
+            drawCraftingRow(graphics, gridX, secondY, cell, new String[]{"LLL", "LWN", "NNN"},
+                    new ItemStack(HatItems.WHITE_HAT.get()),
+                    Component.translatable("hatmod.tuner.hat.white_hat"));
+            note = "hatmod.tuner.hatRecipeNote";
+        } else {
+            drawCraftingRow(graphics, gridX, firstY, cell, new String[]{"LLL", "LRN", "NNN"},
+                    new ItemStack(HatItems.RED_HAT.get()),
+                    Component.translatable("hatmod.tuner.hat.red_hat"));
+            drawFusionRow(graphics, gridX, secondY, cell,
+                    Component.translatable("hatmod.tuner.hat.all_hat"));
+            note = "hatmod.tuner.fusionNote";
+        }
+
+        // 翻页：底部 ‹ 页码 ›；热区和这里保持一致（见 mouseClicked）
+        int navY = recipeNavY();
+        int cx = this.width / 2;
+        if (page > 0) {
+            graphics.drawString(this.font, "<", cx - 62, navY, 0xFFFFFF);
+        }
+        if (page < RECIPE_PAGES - 1) {
+            graphics.drawString(this.font, ">", cx + 54, navY, 0xFFFFFF);
+        }
+        graphics.drawCenteredString(this.font,
+                Component.translatable("hatmod.tuner.recipePage", page + 1, RECIPE_PAGES),
+                cx, navY, 0x9A9AA8);
+        graphics.drawString(this.font, Component.translatable(note),
+                x0 + 10, y0 + panelH - 14, 0x9A9AA8);
+    }
+
+    /** 翻页那一行的 y（面板底部往上 30 像素；和点击热区共用）。 */
+    private int recipeNavY() {
+        int panelH = Math.min(210, this.height - 24);
+        return (this.height - panelH) / 2 + panelH - 30;
+    }
+
+    @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (this.showRecipes) {
+            // 合成表开着时整块面板吃掉点击，别让底下被盖住的输入框抢到焦点
+            int navY = recipeNavY();
+            int cx = this.width / 2;
+            if (mouseY >= navY - 2 && mouseY <= navY + 10) {
+                if (mouseX >= cx - 66 && mouseX <= cx - 46) {
+                    this.recipePage = Math.max(0, this.recipePage - 1);
+                    return true;
+                }
+                if (mouseX >= cx + 50 && mouseX <= cx + 70) {
+                    this.recipePage = Math.min(RECIPE_PAGES - 1, this.recipePage + 1);
+                    return true;
+                }
+            }
+            return true;
+        }
+        return super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    /** 一行配方：3×3 格 + 箭头 + 产物格 + 名字。 */
+    private void drawCraftingRow(GuiGraphics graphics, int x, int y, int cell,
+                                  String[] pattern, ItemStack result, Component label) {
+        for (int row = 0; row < 3; row++) {
+            String line = row < pattern.length ? pattern[row] : "";
+            for (int col = 0; col < 3; col++) {
+                int sx = x + col * cell;
+                int sy = y + row * cell;
+                // 格子：深色底 + 上缘高光，看起来像工作台的槽
+                graphics.fill(sx, sy, sx + cell - 2, sy + cell - 2, 0xFF262631);
+                graphics.fill(sx, sy, sx + cell - 2, sy + 1, 0xFF3C3C4C);
+                char key = col < line.length() ? line.charAt(col) : ' ';
+                graphics.renderItem(recipeItem(key), sx + 3, sy + 3);
+            }
+        }
+        int outX = drawArrow(graphics, x + cell * 3 + 6, y + cell + 2) + 8;
+        int outY = y + cell - 2;
+        drawResultSlot(graphics, outX, outY, cell, result);
+        graphics.drawString(this.font, label, outX + cell + 8, outY + 6, 0xFFFFFF);
+    }
+
+    /** 融合配方那一行：三顶帽子并排（位置随意）+ 箭头 + 「全」。 */
+    private void drawFusionRow(GuiGraphics graphics, int x, int y, int cell, Component label) {
+        ItemStack[] parts = {
+                new ItemStack(HatItems.BLACK_HAT.get()),
+                new ItemStack(HatItems.WHITE_HAT.get()),
+                new ItemStack(HatItems.RED_HAT.get()),
+        };
+        for (int i = 0; i < parts.length; i++) {
+            int sx = x + i * cell;
+            graphics.fill(sx, y, sx + cell - 2, y + cell - 2, 0xFF262631);
+            graphics.fill(sx, y, sx + cell - 2, y + 1, 0xFF3C3C4C);
+            graphics.renderItem(parts[i], sx + 3, y + 3);
+        }
+        int outX = drawArrow(graphics, x + cell * 3 + 6, y + cell / 2 - 2) + 8;
+        drawResultSlot(graphics, outX, y - 2, cell, new ItemStack(HatItems.ALL_HAT.get()));
+        graphics.drawString(this.font, label, outX + cell + 8, y + 4, 0xFFFFFF);
+    }
+
+    /** 箭头，返回它右边缘的 x（调用方据此摆产物格）。 */
+    private int drawArrow(GuiGraphics graphics, int x, int y) {
+        graphics.fill(x, y, x + 12, y + 2, 0xFF9A9AAA);
+        graphics.fill(x + 10, y - 3, x + 12, y + 5, 0xFF9A9AAA);
+        graphics.fill(x + 12, y - 1, x + 14, y + 3, 0xFF9A9AAA);
+        return x + 14;
+    }
+
+    private void drawResultSlot(GuiGraphics graphics, int x, int y, int cell, ItemStack result) {
+        graphics.fill(x, y, x + cell, y + cell, 0xFF3A2E52);
+        graphics.fill(x, y, x + cell, y + 1, 0xFF8B5CF6);
+        graphics.renderItem(result, x + 3, y + 3);
     }
 
     @Override

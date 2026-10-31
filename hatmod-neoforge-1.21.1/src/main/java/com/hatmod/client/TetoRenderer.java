@@ -24,7 +24,6 @@ import org.joml.Matrix4f;
  */
 public class TetoRenderer extends EntityRenderer<Teto> {
 
-    private static final ResourceLocation TEXTURE = HatMod.id("textures/entity/teto.png");
 
     /**
      * 序列帧排布：整段动作 992 帧，43 列 x 24 行，每格 94x169（贴图 4042x4056）。
@@ -58,29 +57,32 @@ public class TetoRenderer extends EntityRenderer<Teto> {
 
     @Override
     public ResourceLocation getTextureLocation(Teto entity) {
-        return TEXTURE;
+        return TetoRenderSettings.texture();
     }
 
     @Override
     public void render(Teto entity, float entityYaw, float partialTick,
                        PoseStack poseStack, MultiBufferSource buffer, int packedLight) {
-        int frame = (entity.tickCount / FRAME_TICKS) % FRAME_COUNT;
+        // 帧率与画质都是客户端可调的（调参器「脑蚀」页 / config/hatmod-client.json）
+        int frame = TetoRenderSettings.frameIndex(entity.tickCount);
         int column = frame % COLUMNS;
         int row = frame / COLUMNS;
 
-        // 半像素内缩：相邻帧就贴在旁边，正好取到格子边界的话双线性采样会渗一条边过去
-        float u0 = (column * CELL_W + 0.5F) / (float) (COLUMNS * CELL_W);
-        float u1 = ((column + 1) * CELL_W - 0.5F) / (float) (COLUMNS * CELL_W);
+        // 半像素内缩：相邻帧就贴在旁边，正好取到格子边界的话双线性采样会渗一条边过去。
+        // 低分辨率图的 1 像素 = 源图好几像素，所以内缩值跟着画质放大。
+        float inset = TetoRenderSettings.uvInset();
+        float u0 = (column * CELL_W + inset) / (float) (COLUMNS * CELL_W);
+        float u1 = ((column + 1) * CELL_W - inset) / (float) (COLUMNS * CELL_W);
         // 贴图 v=0 在最上面，所以格子的「上边」用 row 的起点
-        float v0 = (row * CELL_H + 0.5F) / (float) (ROWS * CELL_H);
-        float v1 = ((row + 1) * CELL_H - 0.5F) / (float) (ROWS * CELL_H);
+        float v0 = (row * CELL_H + inset) / (float) (ROWS * CELL_H);
+        float v1 = ((row + 1) * CELL_H - inset) / (float) (ROWS * CELL_H);
 
         poseStack.pushPose();
         // 整块四边形贴着相机：相机怎么转，它怎么转
         poseStack.mulPose(this.entityRenderDispatcher.cameraOrientation());
         PoseStack.Pose pose = poseStack.last();
         Matrix4f matrix = pose.pose();
-        VertexConsumer vertices = buffer.getBuffer(RenderType.entityTranslucent(TEXTURE));
+        VertexConsumer vertices = buffer.getBuffer(RenderType.entityTranslucent(TetoRenderSettings.texture()));
 
         float half = WIDTH / 2.0F;
         // 左下 → 右下 → 右上 → 左上
@@ -92,6 +94,7 @@ public class TetoRenderer extends EntityRenderer<Teto> {
         poseStack.popPose();
         super.render(entity, entityYaw, partialTick, poseStack, buffer, packedLight);
     }
+
 
     private static void vertex(VertexConsumer vertices, PoseStack.Pose pose, Matrix4f matrix,
                                float x, float y, float u, float v, int packedLight) {

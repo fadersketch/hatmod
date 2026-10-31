@@ -130,6 +130,8 @@ public final class HatAbilities {
     private static final float BLINK_SOUND_VOLUME = 3.0F;
     /** 黑帽每轮蓄力最多能「瞬移躲掉」几次伤害。 */
     private static final int BLINKS_PER_CHARGE = 3;
+    /** 「身轻如燕」：一次照射里要用光柱打死几个。 */
+    private static final int LIGHT_STEP_KILLS = 5;
 
     /** 帽子上每多一个附魔，就给戴帽者多加多少点护甲。 */
     private static final double ARMOR_PER_ENCHANT = 2.0D;
@@ -329,11 +331,21 @@ public final class HatAbilities {
      * 所以给它一个真正的持续时间 —— 这就是声波的「控制」部分。
      */
     private static void holdFor(ServerLevel level, LivingEntity living, int ticks) {
+        // 效果时长 = 这次强控要持续多久（多留 10 刻余量，别刚好卡在到期那一帧掉）
+        holdFor(level, living, ticks, ticks + 10, HOLD_AMPLIFIER);
+    }
+
+    /**
+     * 按住 {@code holdTicks} 刻，三条效果各持续 {@code effectTicks} 刻，
+     * 「缓慢」用 {@code slowAmplifier} 级（声波要的是 255，压到基本走不动）。
+     */
+    private static void holdFor(ServerLevel level, LivingEntity living, int holdTicks,
+                                int effectTicks, int slowAmplifier) {
         living.setDeltaMovement(Vec3.ZERO);
         living.hurtMarked = true;
-        living.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SLOWDOWN, HOLD_TICKS, HOLD_AMPLIFIER, false, false, false));
-        living.addEffect(new MobEffectInstance(MobEffects.WEAKNESS, HOLD_TICKS, DISABLE_AMPLIFIER, false, false, false));
-        living.addEffect(new MobEffectInstance(MobEffects.DIG_SLOWDOWN, HOLD_TICKS, DISABLE_AMPLIFIER, false, false, false));
+        living.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SLOWDOWN, effectTicks, slowAmplifier, false, false, false));
+        living.addEffect(new MobEffectInstance(MobEffects.WEAKNESS, effectTicks, DISABLE_AMPLIFIER, false, false, false));
+        living.addEffect(new MobEffectInstance(MobEffects.DIG_SLOWDOWN, effectTicks, DISABLE_AMPLIFIER, false, false, false));
 
         Hold previous = HELD.get(living.getUUID());
         Mob forced = previous == null ? null : previous.forcedNoAi;
@@ -346,7 +358,7 @@ public final class HatAbilities {
             }
         }
         long now = level.getServer().getTickCount();
-        HELD.put(living.getUUID(), new Hold(now + ticks, forced));
+        HELD.put(living.getUUID(), new Hold(now + holdTicks, forced));
     }
 
     /**
@@ -361,16 +373,20 @@ public final class HatAbilities {
      * 「脑蚀」的声波：一次结算，按住 {@code ticks} 刻。
      *
      * <p>和光柱同一套强控（缓慢 255 + 虚弱 255 + 挖掘疲劳 255 + 强制 {@code NoAI}），
-     * 区别只在不需要每刻续 —— 声波只发生一瞬。
+     * 区别只在不需要每刻续 —— 声波只发生一瞬，所以一次性挂满整段（20 秒）。
      */
     static void applySonicHold(ServerLevel level, LivingEntity living, int ticks) {
-        holdFor(level, living, ticks);
+        // 声波只结算一瞬，没有下一次续期：效果时长就是整段定身时间，缓慢直接给 255
+        holdFor(level, living, ticks, ticks, SONIC_SLOW_AMPLIFIER);
     }
+
+    /** 声波的「缓慢」等级：255（压到几乎不动，配合强制 NoAI 就是彻底定住）。 */
+    private static final int SONIC_SLOW_AMPLIFIER = 255;
 
     /**
      * 解除到期的强控并恢复 AI。
      *
-     * <p>按「到期刻」判定（光柱每刻续 2 刻，声波一次挂 3 秒），而不是在光柱结束时逐个通知：
+     * <p>按「到期刻」判定（光柱每刻续 2 刻，声波一次挂 20 秒），而不是在光柱结束时逐个通知：
      * 施法者死亡、摘帽、掉线、走远等情况都能自动收尾，不会留下一只永久 noAI 的怪。
      */
     private static void releaseStaleHolds(int now) {
@@ -694,6 +710,8 @@ public final class HatAbilities {
                 clearBeamSync(wearer, state);
                 STATES.remove(id);
                 PERCENT_BUDGET.remove(id);
+                STEP_NANOS.remove(id);
+                STEP_CARRY.remove(id);
             }
             return;
         }
@@ -723,15 +741,56 @@ public final class HatAbilities {
         // 帽子上每多一个附魔，护甲 +2
         applyEnchantArmor(wearer, hatStack(wearer));
 
-        if (state.flash > 0) {
-            tickingFlash(wearer, level, state);
-        } else if (state.charge > 0) {
-            tickingCharge(wearer, level, state);
-        } else if (findNearestEnemy(wearer) != null) {
-            // 只有存在合法目标才会进入蓄力阶段；循环由此开始
-            startCharge(wearer, level, state);
-            tickingCharge(wearer, level, state);
+        // ---- 这一轮的时长也是照着 BGM 排的（蓄力 = 前奏、照射 = 副歌）----
+        // 和「脑蚀」那条链路同一个问题：服务器掉 TPS 时游戏刻慢于真实时间，而音乐是按
+        // 真实时间放的，光柱就会比音乐晚亮、晚收。这里按真实流逝的时间补刻，一次最多补
+        // MAX_CATCH_UP 刻；补的部分仍旧一刻一刻按顺序走，所以蓄力/照射的分界点不会漏。
+        int steps = stepsFor(id);
+        for (int i = 0; i < steps; i++) {
+            if (state.flash > 0) {
+                tickingFlash(wearer, level, state);
+            } else if (state.charge > 0) {
+                tickingCharge(wearer, level, state);
+            } else if (findNearestEnemy(wearer) != null) {
+                // 只有存在合法目标才会进入蓄力阶段；循环由此开始
+                startCharge(wearer, level, state);
+                tickingCharge(wearer, level, state);
+            } else {
+                break;
+            }
         }
+    }
+
+    /** 一次最多补几刻（和 {@code BrainrotCycle} 同一个数）：再多说明是暂停 / 传送 / 读盘。 */
+    private static final int MAX_CATCH_UP = 3;
+
+    /** 每个戴帽者上一次走谱的真实时刻 / 攒下的零头（刻）。 */
+    private static final Map<UUID, Long> STEP_NANOS = new HashMap<>();
+    private static final Map<UUID, Double> STEP_CARRY = new HashMap<>();
+
+    /**
+     * 这一服务器刻该走几刻（按真实流逝时间算，1 ~ {@link #MAX_CATCH_UP}）。
+     *
+     * <p>正常 20 TPS 时每次正好 1；掉到 15 TPS 会攒够再补一刻，掉到 10 TPS 每刻走 2 刻，
+     * 「蓄力结束 / 照射开始」还是按真实时间落在音乐上。超过 5 秒的空档（单人暂停、
+     * 区块读盘）直接当 1 刻，不追 —— 那段时间音乐也停着。
+     */
+    private static int stepsFor(UUID id) {
+        long now = System.nanoTime();
+        Long last = STEP_NANOS.put(id, now);
+        double elapsed = last == null ? 1.0D : (now - last) / 50_000_000.0D;
+        if (elapsed > 5.0D) {
+            elapsed = 1.0D;
+        }
+        elapsed = Math.min(elapsed, MAX_CATCH_UP);
+        double pending = elapsed + STEP_CARRY.getOrDefault(id, 0.0D);
+        int steps = (int) pending;
+        if (steps <= 0) {
+            steps = 1;
+            pending = 1.0D;
+        }
+        STEP_CARRY.put(id, Math.max(0.0D, pending - steps));
+        return Math.min(steps, MAX_CATCH_UP);
     }
 
     /**
@@ -775,6 +834,39 @@ public final class HatAbilities {
         state.route = state.routeBag[state.routeBagIndex++];
     }
 
+    /**
+     * 强制开一轮（P 键）：附近没有敌人也直接进蓄力。
+     *
+     * <p>正常流程要 {@link #findNearestEnemy} 找到目标才会起手；这个入口跳过那条判断。
+     * 已经在蓄力 / 照射中、或者压根没戴帽子就返回 false。
+     */
+    public static boolean forceStart(LivingEntity wearer) {
+        if (!(wearer.level() instanceof ServerLevel level)) {
+            return false;
+        }
+        HatType type = HatItems.typeOf(hatStack(wearer));
+        if (type == null || wearer.isDeadOrDying() || wearer.isSpectator()) {
+            return false;
+        }
+        UUID id = wearer.getUUID();
+        HatState state = STATES.get(id);
+        if (state != null && (state.charge > 0 || state.flash > 0)) {
+            return false;
+        }
+        if (state == null) {
+            state = new HatState();
+            STATES.put(id, state);
+        }
+        if (state.type != type) {
+            state.reset();
+            state.type = type;
+            state.route = type;
+        }
+        startCharge(wearer, level, state);
+        tickingCharge(wearer, level, state);
+        return true;
+    }
+
     /** 进入蓄力阶段：重置本轮状态并播放这顶帽子（或「全」这一轮路线）的音乐。 */
     private static void startCharge(LivingEntity wearer, ServerLevel level, HatState state) {
         ItemStack hat = hatStack(wearer);
@@ -785,6 +877,13 @@ public final class HatAbilities {
         state.charge = HatSettings.chargeTicks(state.route);
         state.blinks = BLINKS_PER_CHARGE + HatEnchants.extraBlinks(hat);
         state.flashBlinks = 0;
+        // 成就记账：本轮蓄力还没闪避过、也没挨过打
+        state.chargeBlinks = 0;
+        state.hitWhileCharging = false;
+        // 「三色归一」：「全」每轮走一条路线，三条都集齐就发
+        if (state.type == HatType.ALL) {
+            HatAchievements.noteRoute(wearer, state.route);
+        }
         state.dominionFired = false;
         // 新一轮循环：百分比伤害的「每轮上限」重新开始记
         PERCENT_BUDGET.remove(wearer.getUUID());
@@ -817,6 +916,11 @@ public final class HatAbilities {
             level.playSound(null, wearer.getX(), wearer.getY(), wearer.getZ(),
                     SoundEvents.BEACON_ACTIVATE, SoundSource.PLAYERS, 0.7F, 1.6F);
             state.flash = HatSettings.flashTicks(state.route);
+            state.flashKills = 0;
+            // 「不动如山」：红帽蓄力全程一次没被打中，光柱照常放出来了
+            if (state.type == HatType.RED && !state.hitWhileCharging) {
+                HatAchievements.grant(wearer, HatAchievements.IMMOVABLE);
+            }
             // 「全」帽专属：蓄力完成的那一刻放出 4 个虚影，绕最近的敌人转圈并嘲讽。
             // 寿命 = 主人这一轮的照射时长（路线不同则长短不同）。
             if (state.type == HatType.ALL) {
@@ -1703,6 +1807,10 @@ public final class HatAbilities {
         if (state == null || state.type == null) {
             return;
         }
+        // 「不动如山」：红帽没有闪避特性，伤害能走到这里就说明这一下真的打中了
+        if (state.type == HatType.RED && state.charge > 0) {
+            state.hitWhileCharging = true;
+        }
         if (!state.type.has(HatType.Trait.BLINK)) {
             return;
         }
@@ -1728,6 +1836,11 @@ public final class HatAbilities {
         }
         if (charging) {
             state.blinks--;
+            state.chargeBlinks++;
+            // 「神本无相」：一轮蓄力里三次闪避全用掉
+            if (state.chargeBlinks >= BLINKS_PER_CHARGE) {
+                HatAchievements.grant(entity, HatAchievements.SHADE_STEP);
+            }
         } else {
             state.flashBlinks--;
         }
@@ -2384,6 +2497,17 @@ public final class HatAbilities {
         target.invulnerableTime = 0;
         target.hurt(source, poweredFlat);
 
+        // 「身轻如燕」：白帽一次照射里用光柱击杀五个
+        if (type == HatType.WHITE && before > 0.0F && target.isDeadOrDying()) {
+            HatState killState = STATES.get(wearer.getUUID());
+            if (killState != null && killState.flash > 0) {
+                killState.flashKills++;
+                if (killState.flashKills >= LIGHT_STEP_KILLS) {
+                    HatAchievements.grant(wearer, HatAchievements.LIGHT_STEP);
+                }
+            }
+        }
+
         // **这一击算戴帽者本人打的**：原版近战会在攻击方身上记一个 lastHurtMob，
         // 被驯服的狼（OwnerHurtTargetGoal）、女仆、脑蚀小怪都是靠它决定「跟着主人咬谁」。
         // 光柱是直接 hurt()，不会自动记，所以这里补上。
@@ -2406,7 +2530,7 @@ public final class HatAbilities {
      *
      * <p>只认「和伤害直接相关」的原版效果。想再接别的 buff（比如某模组的易伤），往这里加一行即可。
      */
-    private static float beamPowerMultiplier(LivingEntity wearer) {
+    static float beamPowerMultiplier(LivingEntity wearer) {
         float power = 1.0F;
         MobEffectInstance strength = wearer.getEffect(MobEffects.DAMAGE_BOOST);
         if (strength != null) {
@@ -2477,22 +2601,14 @@ public final class HatAbilities {
         if (health < target.getMaxHealth() * HatSettings.healthDamageFloor(type)) {
             return;
         }
-        // 每轮循环对同一个敌人最多打掉「最大生命值 × 10%」的百分比伤害，打满就不再扣
-        float budget = target.getMaxHealth() * PERCENT_DAMAGE_PER_CYCLE;
-        Map<UUID, Float> spentByTarget = PERCENT_BUDGET.computeIfAbsent(wearer.getUUID(), key -> new HashMap<>());
-        float spent = spentByTarget.getOrDefault(target.getUUID(), 0.0F);
-        float allowed = budget - spent;
-        if (allowed <= 0.0F) {
-            return;
-        }
+        // 不再设每轮预算：百分比打到 5% 地板为止（地板本身见上）。
         // setHealth 内部会 clamp 到 [0, maxHealth]；力量倍率再高，这里也夹在 (0, health) 之间，安全。
         float ratio = Math.min(HatSettings.healthDamageRatio(type) * power, 0.95F);
-        float damage = Math.min(health * ratio, allowed);
+        float damage = health * ratio;
         if (damage <= 0.0F) {
             return;
         }
         target.setHealth(health - damage);
-        spentByTarget.put(target.getUUID(), spent + damage);
     }
 
     /**

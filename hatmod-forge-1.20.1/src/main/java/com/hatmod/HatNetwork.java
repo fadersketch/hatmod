@@ -39,7 +39,9 @@ public final class HatNetwork {
      * 所以这里从 {@code "1"} 提到 {@code "2"}：版本不一致时 Forge 直接拒绝连接，
      * 而不是让两边拿错值跑。以后只要改动任何包的字段布局，都要把它加一。
      */
-    private static final String PROTOCOL = "3";
+    // "6"：加了闪避通知包（QteDodgeMessage）
+    // "7"：加了强制开始链路包（ForceStartMessage）
+    private static final String PROTOCOL = "9";
 
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             HatMod.id("main"), () -> PROTOCOL, PROTOCOL::equals, PROTOCOL::equals);
@@ -71,8 +73,16 @@ public final class HatNetwork {
                 RouteMessage::encode, RouteMessage::decode, RouteMessage::handle);
         CHANNEL.registerMessage(7, BrainrotSpinMessage.class,
                 BrainrotSpinMessage::encode, BrainrotSpinMessage::decode, BrainrotSpinMessage::handle);
-        CHANNEL.registerMessage(8, BrainrotTextMessage.class,
-                BrainrotTextMessage::encode, BrainrotTextMessage::decode, BrainrotTextMessage::handle);
+        CHANNEL.registerMessage(9, QteTapMessage.class,
+                QteTapMessage::encode, QteTapMessage::decode, QteTapMessage::handle);
+        CHANNEL.registerMessage(10, QteStateMessage.class,
+                QteStateMessage::encode, QteStateMessage::decode, QteStateMessage::handle);
+        CHANNEL.registerMessage(11, QteDodgeMessage.class,
+                QteDodgeMessage::encode, QteDodgeMessage::decode, QteDodgeMessage::handle);
+        CHANNEL.registerMessage(12, ForceStartMessage.class,
+                ForceStartMessage::encode, ForceStartMessage::decode, ForceStartMessage::handle);
+        CHANNEL.registerMessage(13, AutoTapMessage.class,
+                AutoTapMessage::encode, AutoTapMessage::decode, AutoTapMessage::handle);
     }
 
     /** 通知客户端某个戴帽者「开始/停止照射」，以及它锁定了谁（每道光柱一个 id）。 */
@@ -94,9 +104,48 @@ public final class HatNetwork {
                 new BrainrotSpinMessage(wearer.getId(), spin));
     }
 
-    /** 「脑蚀」的屏幕文字：只发给戴帽者自己。 */
-    public static void sendBrainrotText(ServerPlayer player) {
-        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new BrainrotTextMessage());
+    /** 「打拍」的最新判定（连击 / PERFECT-GOOD-MISS）：只发给戴帽者自己，HUD 用它画判定字。 */
+    public static void sendQteState(ServerPlayer player, int combo, int rating, int dodges) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new QteStateMessage(combo, rating, dodges));
+    }
+
+    /** 「闪避落空」：只告诉挨打的那一个玩家，让他的屏幕闪一下紫边。 */
+    public static void sendQteDodge(ServerPlayer player) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new QteDodgeMessage());
+    }
+
+    /** 客户端：按 P 请求强制开一轮（不看附近有没有敌人）。 */
+    public static void sendForceStart() {
+        CHANNEL.sendToServer(new ForceStartMessage());
+    }
+
+    /**
+     * 「强制开始链路」：戴着脑蚀帽就开脑蚀那一轮（音乐 + Teto + 时间线），
+     * 否则按牛仔帽直接进蓄力。两样都没戴就什么也不发生。
+     */
+    private static void handleForceStart(ServerPlayer player) {
+        if (player == null) {
+            return;
+        }
+        if (!BrainrotCycle.forceStart(player)) {
+            HatAbilities.forceStart(player);
+        }
+    }
+
+    /** 客户端：按了一下打拍（带 HUD 的钟走到几刻）。 */
+    /** 客户端：调参器里切换「自动打拍」。 */
+    public static void sendAutoTap(boolean on) {
+        CHANNEL.sendToServer(new AutoTapMessage(on));
+    }
+
+    /** 服务端：把「自动打拍」的当前状态告诉某个玩家（进服时同步，界面显示才对）。 */
+    public static void sendAutoTapTo(ServerPlayer player, boolean on) {
+        CHANNEL.sendTo(new AutoTapMessage(on), player.connection.connection,
+                net.minecraftforge.network.NetworkDirection.PLAY_TO_CLIENT);
+    }
+
+    public static void sendQteTap(int clientAge) {
+        CHANNEL.sendToServer(new QteTapMessage(clientAge));
     }
 
     /** 只发给某一个玩家：某个实体此刻的自转状态（玩家刚进入视野时补发）。 */
@@ -315,21 +364,118 @@ public final class HatNetwork {
         }
     }
 
-    /**
-     * 「脑蚀」的屏幕文字（No too late）。没有字段。
-     */
-    public record BrainrotTextMessage() {
+    /** 「自动打拍」（调参器里的调试开关）：纯调试，用过的一轮不发成就。 */
+    public record AutoTapMessage(boolean on) {
 
-        public static void encode(BrainrotTextMessage msg, FriendlyByteBuf buf) {
+        public static void encode(AutoTapMessage msg, FriendlyByteBuf buf) {
+            buf.writeBoolean(msg.on());
         }
 
-        public static BrainrotTextMessage decode(FriendlyByteBuf buf) {
-            return new BrainrotTextMessage();
+        public static AutoTapMessage decode(FriendlyByteBuf buf) {
+            return new AutoTapMessage(buf.readBoolean());
         }
 
-        public static void handle(BrainrotTextMessage msg, Supplier<NetworkEvent.Context> ctx) {
+        public static void handle(AutoTapMessage msg, Supplier<NetworkEvent.Context> ctx) {
             NetworkEvent.Context context = ctx.get();
-            context.enqueueWork(() -> com.hatmod.client.BrainrotText.show());
+            context.enqueueWork(() -> {
+                // 同一个包两个方向：客户端收到 = 服务端在同步状态；服务端收到 = 玩家点了按钮
+                if (context.getDirection() == net.minecraftforge.network.NetworkDirection.PLAY_TO_CLIENT) {
+                    com.hatmod.client.BrainrotQteClient.setAutoTap(msg.on());
+                    return;
+                }
+                ServerPlayer player = context.getSender();
+                if (player != null) {
+                    BrainrotQte.setAutoTap(player, msg.on());
+                }
+            });
+            context.setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 「打拍」按下的一下（C2S）：{@code clientAge} 是客户端 HUD 的钟走到几刻 ——
+     * 玩家照着 HUD 按的，就按 HUD 的钟判，服务端只做漂移校验（差太多就用自己的钟）。
+     */
+    public record QteTapMessage(int clientAge) {
+
+        public static void encode(QteTapMessage msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.clientAge());
+        }
+
+        public static QteTapMessage decode(FriendlyByteBuf buf) {
+            return new QteTapMessage(buf.readVarInt());
+        }
+
+        public static void handle(QteTapMessage msg, Supplier<NetworkEvent.Context> ctx) {
+            NetworkEvent.Context context = ctx.get();
+            context.enqueueWork(() -> {
+                ServerPlayer player = context.getSender();
+                if (player != null) {
+                    BrainrotQte.tap(player, msg.clientAge());
+                }
+            });
+            context.setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 「打拍」的最新状态（S2C）：连击数 + 最近一次判定（PERFECT / GOOD / MISS）。
+     */
+    public record QteStateMessage(int combo, int rating, int dodges) {
+
+        public static void encode(QteStateMessage msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.combo());
+            buf.writeVarInt(msg.rating());
+            buf.writeVarInt(msg.dodges());
+        }
+
+        public static QteStateMessage decode(FriendlyByteBuf buf) {
+            return new QteStateMessage(buf.readVarInt(), buf.readVarInt(), buf.readVarInt());
+        }
+
+        public static void handle(QteStateMessage msg, Supplier<NetworkEvent.Context> ctx) {
+            NetworkEvent.Context context = ctx.get();
+            context.enqueueWork(() -> com.hatmod.client.BrainrotQteClient.onState(
+                    msg.combo(), msg.rating(), msg.dodges()));
+            context.setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 「闪避落空」的通知（S2C，空包）：只发给被闪掉这一击的玩家，
+     * HUD 收到就画一整屏紫边 + 大字「闪避」。
+     */
+    public record QteDodgeMessage() {
+
+        public static void encode(QteDodgeMessage msg, FriendlyByteBuf buf) {
+            // 空包：只表示「闪了一次」
+        }
+
+        public static QteDodgeMessage decode(FriendlyByteBuf buf) {
+            return new QteDodgeMessage();
+        }
+
+        public static void handle(QteDodgeMessage msg, Supplier<NetworkEvent.Context> ctx) {
+            NetworkEvent.Context context = ctx.get();
+            context.enqueueWork(() -> com.hatmod.client.BrainrotQteClient.onDodge());
+            context.setPacketHandled(true);
+        }
+    }
+
+    /** 「强制开始链路」请求（C2S，空包）：服务端按玩家戴的帽子决定开哪一轮。 */
+    public record ForceStartMessage() {
+
+        public static void encode(ForceStartMessage msg, FriendlyByteBuf buf) {
+            // 空包
+        }
+
+        public static ForceStartMessage decode(FriendlyByteBuf buf) {
+            return new ForceStartMessage();
+        }
+
+        public static void handle(ForceStartMessage msg, Supplier<NetworkEvent.Context> ctx) {
+            NetworkEvent.Context context = ctx.get();
+            context.enqueueWork(() -> handleForceStart(context.getSender()));
             context.setPacketHandled(true);
         }
     }

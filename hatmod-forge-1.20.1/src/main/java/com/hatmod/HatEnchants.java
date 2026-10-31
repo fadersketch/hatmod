@@ -206,7 +206,7 @@ public final class HatEnchants {
         if (enchantment == null || !enchantment.isPresent()) {
             return 0;
         }
-        if (hat.isEmpty() || !kind.accepts(HatItems.typeOf(hat))) {
+        if (hat.isEmpty() || !kind.acceptsStack(hat)) {
             return 0;
         }
         return EnchantmentHelper.getItemEnchantmentLevel(enchantment.get(), hat);
@@ -339,6 +339,16 @@ public final class HatEnchants {
             return candidate == this.hat || candidate == HatType.ALL;
         }
 
+        /**
+         * 这顶帽子能不能附上这个专属附魔 —— 直接认物品，不绕 {@code typeOf}。
+         *
+         * <p>「共鸣」没有 {@link HatType}（脑蚀不占路线），必须看物品本身；
+         * 其余九个照旧走 {@link #accepts}。
+         */
+        public boolean acceptsStack(ItemStack stack) {
+            return this.hat == null ? stack.is(HatItems.BRAIN_HAT.get()) : accepts(HatItems.typeOf(stack));
+        }
+
         /** 注册名（不含命名空间）。 */
         public String id() {
             return this.id;
@@ -370,7 +380,7 @@ public final class HatEnchants {
         /** 专属：只认自己那顶帽子（以及三顶合一的「全」）。原版头盔、其它帽子一律 false。 */
         @Override
         public boolean canEnchant(ItemStack stack) {
-            return this.kind.accepts(HatItems.typeOf(stack));
+            return this.kind.acceptsStack(stack);
         }
 
         /**
@@ -380,7 +390,7 @@ public final class HatEnchants {
          */
         @Override
         public boolean canApplyAtEnchantingTable(ItemStack stack) {
-            return this.kind.accepts(HatItems.typeOf(stack));
+            return this.kind.acceptsStack(stack);
         }
 
         @Override

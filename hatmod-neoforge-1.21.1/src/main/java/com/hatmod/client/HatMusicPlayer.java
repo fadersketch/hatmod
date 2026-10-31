@@ -79,6 +79,8 @@ public final class HatMusicPlayer {
 
     /** 服务端通知：某个戴帽者的 BGM 开始 / 停止了。 */
     public static void handle(int wearerId, int ordinal, boolean playing) {
+        // 打拍的客户端钟：只有本地玩家自己的脑蚀 BGM 才立钟（见 BrainrotQteClient）
+        BrainrotQteClient.onMusic(wearerId, ordinal, playing);
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.level == null) {
             return;
@@ -128,19 +130,18 @@ public final class HatMusicPlayer {
     @SubscribeEvent
     public static void onClientTick(ClientTickEvent.Post event) {
         Minecraft minecraft = Minecraft.getInstance();
+        // 暂停时先返回：声音引擎也一起停了，谱子的钟跟着停才对得上
+        if (minecraft.isPaused()) {
+            return;
+        }
+        // 谱子的钟按**真实时间**走：实体多、帧率掉的时候游戏刻会慢，但 BGM 不会
+        BrainrotQteClient.advanceClock();
         if (TRACKS.isEmpty()) {
             return;
         }
 
-        // 暂停（Esc / 失焦 / 单人暂停）时**不能**推进心跳、也不能判定死亡：
-        // 原版在暂停时不 tick 声音引擎（Minecraft.tick -> SoundManager.tick(paused) ->
-        // SoundEngine 直接跳过 tickNonPaused），所以声音实例的 tick() 不会跑、心跳停在原地；
-        // 而 ClientTickEvent 暂停时照常触发。两边一叠加，暂停几刻之后所有 BGM 都会被
-        // 误判成"心跳停了" —— 这就是最早那版「玩着玩着 BGM 突然没了」的来源。
-        // 暂停期间原样保留，恢复后声音引擎接着 tick，心跳自然跟上。
-        if (minecraft.isPaused()) {
-            return;
-        }
+        // 暂停已经在上面挡掉了（连谱子的钟一起停），这里只在真正 tick 时才推进心跳：
+        // 原版暂停时不 tick 声音引擎，心跳会停在原地 —— 所以千万别在这里再判一次死亡。
         ticks++;
 
         Iterator<Map.Entry<Integer, Track>> iterator = TRACKS.entrySet().iterator();

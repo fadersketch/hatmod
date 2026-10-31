@@ -16,7 +16,9 @@ public final class HatPreloader {
 
     /** 双端都存在的类。 */
     private static final String[] COMMON = {
+            "com.hatmod.BrainrotBeats",
             "com.hatmod.BrainrotCycle",
+            "com.hatmod.BrainrotQte",
             "com.hatmod.BrainrotMinions",
             "com.hatmod.HatAbilities",
             "com.hatmod.HatAbilities$Hold",
@@ -34,6 +36,8 @@ public final class HatPreloader {
             "com.hatmod.HatMod",
             "com.hatmod.HatMusic",
             "com.hatmod.HatNetwork",
+            "com.hatmod.HatNetwork$QteTapPayload",
+            "com.hatmod.HatNetwork$QteStatePayload",
             "com.hatmod.HatNetwork$BeamTargetPayload",
             "com.hatmod.HatNetwork$ForesightPayload",
             "com.hatmod.HatNetwork$GreenHeartsPayload",
@@ -62,6 +66,9 @@ public final class HatPreloader {
             "com.hatmod.HatType",
             "com.hatmod.HatType$Trait",
             "com.hatmod.Teto",
+            "com.hatmod.WebImmunity",
+            "com.hatmod.HatAchievements",
+            "com.hatmod.HatEffects$VulnerableEffect",
     };
 
     /** 只在客户端存在的类（渲染、模型、粒子、客户端事件）。 */
@@ -69,12 +76,16 @@ public final class HatPreloader {
             "com.hatmod.client.BeamRenderer",
             "com.hatmod.client.BrainHatFaceLayer",
             "com.hatmod.client.BrainrotSpin",
-            "com.hatmod.client.BrainrotText",
+            "com.hatmod.client.BrainrotGlow",
+            "com.hatmod.client.BrainrotQteClient",
+            "com.hatmod.client.QteHud",
             "com.hatmod.client.BeamRenderTypes",
             "com.hatmod.client.BeamTargets",
             "com.hatmod.client.ClientHatSettings",
             "com.hatmod.client.ClientHatSettings$Snapshot",
             "com.hatmod.client.CowboyHatModel",
+            "com.hatmod.client.TetoRenderSettings",
+            "com.hatmod.client.ClientWebImmunity",
             "com.hatmod.client.FlashLightParticle",
             "com.hatmod.client.FlashLightParticle$Provider",
             "com.hatmod.client.ForesightFilter",

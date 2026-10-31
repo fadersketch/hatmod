@@ -182,7 +182,7 @@ public final class HatEnchants {
      * 反序列化出来的，Holder 实例和我们手上的不一定是同一个，比 key 才不会漏。
      */
     public static int level(ItemStack hat, Kind kind) {
-        if (hat.isEmpty() || !kind.accepts(HatItems.typeOf(hat))) {
+        if (hat.isEmpty() || !kind.acceptsStack(hat)) {
             return 0;
         }
         ResourceKey<Enchantment> key = kind.key();
@@ -323,6 +323,16 @@ public final class HatEnchants {
          */
         public boolean accepts(HatType candidate) {
             return candidate == this.hat || candidate == HatType.ALL;
+        }
+
+        /**
+         * 这顶帽子能不能附上这个专属附魔 —— 直接认物品，不绕 {@code typeOf}。
+         *
+         * <p>「共鸣」没有 {@link HatType}（脑蚀不占路线），必须看物品本身；
+         * 其余九个照旧走 {@link #accepts}。
+         */
+        public boolean acceptsStack(ItemStack stack) {
+            return this.hat == null ? stack.is(HatItems.BRAIN_HAT.get()) : accepts(HatItems.typeOf(stack));
         }
 
         /** 注册名（不含命名空间），也是 {@code data/hatmod/enchantment/<id>.json} 的文件名。 */

@@ -1,0 +1,22 @@
+{
+  "display": {
+    "icon": {
+      "id": "hatmod:all_hat"
+    },
+    "title": {
+      "translate": "advancement.hatmod.trinity.title"
+    },
+    "description": {
+      "translate": "advancement.hatmod.trinity.description"
+    },
+    "frame": "challenge",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "criteria": {
+    "impossible": {
+      "trigger": "minecraft:impossible"
+    }
+  }
+}

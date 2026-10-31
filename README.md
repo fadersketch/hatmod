@@ -23,12 +23,27 @@
 
 推荐从 **Releases** 下载：
 
-- **[最新版本（v1.1.1）](https://github.com/fadersketch/hatmod/releases/latest)**
-  - `hatmod-forge-1.20.1-1.1.1.jar` —— 给 **Minecraft 1.20.1 + Forge**
-  - `hatmod-neoforge-1.21.1-1.1.1.jar` —— 给 **Minecraft 1.21.1 + NeoForge**
+- **[最新版本（v1.2.0）](https://github.com/fadersketch/hatmod/releases/latest)**
+  - `hatmod-forge-1.20.1-1.2.0.jar` —— 给 **Minecraft 1.20.1 + Forge**
+  - `hatmod-neoforge-1.21.1-1.2.0.jar` —— 给 **Minecraft 1.21.1 + NeoForge**
 
 把对应版本的那一个丢进 `.minecraft/mods/` 即可（**只装一个**，装错版本会崩）。
 本模组**不需要任何前置模组**。仓库根目录里也放了同样两个 jar，方便直接取用。
+
+### v1.2.0 更新
+
+- **「脑蚀」打拍整套**：按原曲对齐的逐字卡拉 OK 歌词、`Nope / too / late` 三键、
+  `PERFECT / GOOD / MISS` 判定（屏幕右侧 FNF 式判定字：向上抛出、顶点停留、淡出），
+  以及连击板、涌动和整屏金/绿/红反馈。
+- **成就系统**：「节奏大师」（整首不断连 + 全程接敌，图标是神秘红毛钻头）、
+  黑帽「神本无相」、白帽「身轻如燕」、红帽「不动如山」、「全」的「三色归一」。
+- **谱子和 BGM 锁死**：所有按曲子排的攻击（脑蚀整条时间线、牛仔帽的蓄力/照射时长）
+  改成按**真实时间**推进；实体多、服务器掉 TPS 时也会自动补刻追回来，不会越跑越偏。
+- **判定字**：每一条判定独立排队，新的不会顶掉旧的；位置在右起四分之一屏。
+- **弹射物**：「Nope too late」的定身和脚下紫色减速圈现在也会停住 / 放慢箭矢、火球、三叉戟。
+- **图标**：「神隐」「易伤」两个自定义状态效果重画了 18×18 图标。
+- **修复**：「自动打拍」调试开关现在会存进 `config/hatmod.json`，退出游戏再进来还开着；
+  修掉 NeoForge 上 `auto_tap` payload 重复注册导致的启动崩溃。
 
 ---
 

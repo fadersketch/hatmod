@@ -1,0 +1,23 @@
+{
+  "display": {
+    "icon": {
+      "item": "hatmod:mysterious_drill"
+    },
+    "title": {
+      "translate": "advancement.hatmod.rhythm_master.title"
+    },
+    "description": {
+      "translate": "advancement.hatmod.rhythm_master.description"
+    },
+    "frame": "challenge",
+    "background": "minecraft:textures/gui/advancements/backgrounds/stone.png",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "criteria": {
+    "impossible": {
+      "trigger": "minecraft:impossible"
+    }
+  }
+}

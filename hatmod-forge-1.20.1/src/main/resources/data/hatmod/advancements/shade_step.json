@@ -1,0 +1,22 @@
+{
+  "display": {
+    "icon": {
+      "item": "hatmod:black_hat"
+    },
+    "title": {
+      "translate": "advancement.hatmod.shade_step.title"
+    },
+    "description": {
+      "translate": "advancement.hatmod.shade_step.description"
+    },
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "criteria": {
+    "impossible": {
+      "trigger": "minecraft:impossible"
+    }
+  }
+}
