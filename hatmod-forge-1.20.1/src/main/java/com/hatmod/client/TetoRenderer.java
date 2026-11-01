@@ -1,5 +1,6 @@
 package com.hatmod.client;
 
+import com.hatmod.BrainrotCycle;
 import com.hatmod.HatMod;
 import com.hatmod.Teto;
 import com.mojang.blaze3d.vertex.PoseStack;
@@ -16,7 +17,9 @@ import org.joml.Matrix4f;
  * 把「后室 Teto」画成一块**始终面向相机的平面贴图**（和 friends &amp; wine 里的舞者同一个路子）。
  *
  * <p>贴图 {@code textures/entity/teto.png} 是整段动作视频用绿幕抠出来的序列帧：
- * 4042×4056，43 列 × 24 行、每格 94×169、共 **992 帧**（视频 104.4 秒，去掉最后 5.2 秒黑场）；
+ * 4080×3672，24 列 × 12 行、每格 170×306、共 **284 帧**
+ * （重新从 720×1296 的清晰源视频抠了一遍，每格比原来的 94×169 大一倍多；
+ * 序列已裁成「前奏 143 帧 + 循环 141 帧」，见 TetoRenderSettings）；
  * 按每秒 10 帧播放（每帧 2 刻），从出生那一帧开始播，播完从头循环。
  *
  * <p>这里不用 {@code MobRenderer}，因为 Teto 没有立方体模型也没有护甲层 ——
@@ -26,22 +29,24 @@ public class TetoRenderer extends EntityRenderer<Teto> {
 
 
     /**
-     * 序列帧排布：整段动作 992 帧，43 列 x 24 行，每格 94x169（贴图 4042x4056）。
+     * 序列帧排布：284 帧，24 列 x 12 行，每格 170x306（贴图 4080x3672）。
      *
      * <p>源视频全长 104.4 秒，最后 5.2 秒是黑场（片尾），已经切掉 —— 留着会让 Teto
      * 变成一块黑方块再重来。
      *
-     * <p>每格大小是在「992 帧 × 单张贴图两个方向都不超过 4096」的前提下能给的最大值
-     * （≈47 像素/格）。想再清楚只有两条路：少放几帧（掉帧率），或者把 Teto 缩小。
+     * <p>每格大小是「284 帧 × 单张贴图两个方向都不超过 4096」前提下能给的最大值：
+     * 按源视频 720:1296 的长宽比把行数配平，24×12 时两边都刚好卡满，
+     * 于是每格 170×306 —— 比原来的 94×169 大一倍多。
      */
-    private static final int COLUMNS = 43;
-    private static final int ROWS = 24;
-    private static final int FRAME_COUNT = 992;
-    /** 每帧占几刻（源视频 10 帧/秒 → 2 刻/帧，992 帧 = 99.2 秒，播完从头循环）。 */
+    private static final int COLUMNS = 24;
+    /** 序列图排布：284 帧 → 24 列 × 12 行（288 格，多的 4 格用第 0 帧填满）。 */
+    private static final int ROWS = 12;
+    private static final int FRAME_COUNT = 284;
+    /** 每帧占几刻（源视频 10 帧/秒 → 2 刻/帧）；循环由 TetoRenderSettings#frameIndex 负责。 */
     private static final int FRAME_TICKS = 2;
-    /** 每格像素尺寸（整张贴图 4042x4056）。 */
-    private static final int CELL_W = 94;
-    private static final int CELL_H = 169;
+    /** 每格像素尺寸（整张贴图 4080x3672）。 */
+    private static final int CELL_W = 170;
+    private static final int CELL_H = 306;
 
     /**
      * 四边形的实际尺寸（格）。宽度按格子 64:115 的比例算出来，
@@ -73,6 +78,12 @@ public class TetoRenderer extends EntityRenderer<Teto> {
         float inset = TetoRenderSettings.uvInset();
         float u0 = (column * CELL_W + inset) / (float) (COLUMNS * CELL_W);
         float u1 = ((column + 1) * CELL_W - inset) / (float) (COLUMNS * CELL_W);
+        // 左右镜像：贴图本身是照源视频抠的、一帧没翻（剪影比对 IoU 0.94 对 0.39），
+        // 但这条绘制路径画出来会左右反着 —— 对着镜头看到的一面正好和视频互为镜像。
+        // 所以在这里把 U 掉个个儿，贴图一个字节都不用动。
+        float swapU = u0;
+        u0 = u1;
+        u1 = swapU;
         // 贴图 v=0 在最上面，所以格子的「上边」用 row 的起点
         float v0 = (row * CELL_H + inset) / (float) (ROWS * CELL_H);
         float v1 = ((row + 1) * CELL_H - inset) / (float) (ROWS * CELL_H);
@@ -97,9 +108,15 @@ public class TetoRenderer extends EntityRenderer<Teto> {
 
     private static void vertex(VertexConsumer vertices, Matrix4f matrix,
                                float x, float y, float u, float v, int packedLight) {
+        vertex(vertices, matrix, x, y, u, v, packedLight, 1.0F, 1.0F, 1.0F, 1.0F);
+    }
+
+    private static void vertex(VertexConsumer vertices, Matrix4f matrix,
+                               float x, float y, float u, float v, int packedLight,
+                               float r, float g, float b, float a) {
         // 顶点格式和光柱一样是 NEW_ENTITY：位置 -> 颜色 -> UV0 -> overlay -> 亮度 -> 法线
         vertices.vertex(matrix, x, y, 0.0F)
-                .color(1.0F, 1.0F, 1.0F, 1.0F)
+                .color(r, g, b, a)
                 .uv(u, v)
                 .overlayCoords(OverlayTexture.NO_OVERLAY)
                 .uv2(packedLight)

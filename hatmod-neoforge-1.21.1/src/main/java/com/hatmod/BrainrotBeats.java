@@ -96,6 +96,7 @@ public final class BrainrotBeats {
             }
             out.add(tick);
         }
+        densifyBeam(out);
         for (int i = 0; i < 3; i++) {
             out.add(NO_TOO_LATE_FIRST + i * SPEECH_STEP);
             out.add(NO_TOO_LATE_SECOND + i * SPEECH_STEP);
@@ -106,6 +107,79 @@ public final class BrainrotBeats {
             result[i] = out.get(i);
         }
         return result;
+    }
+
+    /**
+     * 光束期加密：相邻两拍隔得够开的，中间补半拍 —— 光束在放的时候按键速度翻倍。
+     *
+     * <p>只动「鼓点」这一层：台词拍、长条、计分段之后的规则都不碰。
+     */
+    private static void densifyBeam(java.util.List<Integer> out) {
+        java.util.List<Integer> added = new java.util.ArrayList<>();
+        for (int i = 0; i + 1 < out.size(); i++) {
+            int a = out.get(i);
+            int b = out.get(i + 1);
+            // 本来就很密的（≤5 刻）不再塞，否则两拍会挤在一起
+            if (b - a < 6 || !inBeam(a)) {
+                continue;
+            }
+            int mid = a + (b - a) / 2;
+            if (mid > SCORE_TO || nearSpeech(mid)) {
+                continue;
+            }
+            boolean inHold = false;
+            for (int h = 0; h < HOLD_COUNT; h++) {
+                if (mid > holdStart(h) && mid <= holdEnd(h)) {
+                    inHold = true;
+                    break;
+                }
+            }
+            if (!inHold) {
+                added.add(mid);
+            }
+        }
+        if (!added.isEmpty()) {
+            out.addAll(added);
+            java.util.Collections.sort(out);
+        }
+    }
+
+    /** 这一刻是不是落在光束阶段（给 HUD 换配色用）。 */
+    public static boolean inBeam(int tick) {
+        return (tick >= BEAM_START && tick < BEAM_END)
+                || (tick >= BEAM2_START && tick < BEAM2_END);
+    }
+
+    /** 光束段的进出各留多少刻做渐变，别让整条谱面「啪」地弹一下。 */
+    private static final int BEAM_EDGE_TICKS = 10;
+    /** 光束期谱面滚动倍率。 */
+    private static final float BEAM_SCROLL = 1.8F;
+
+    /**
+     * 谱面滚动倍率：光束在放的时候键跑得更快（判定窗仍是按刻算的，所以只是更赶、不是更难判）。
+     * 进出各用 {@link #BEAM_EDGE_TICKS} 刻平滑过渡。
+     */
+    public static float scrollFactor(int age) {
+        return 1.0F + (BEAM_SCROLL - 1.0F) * beamBlend(age);
+    }
+
+    /** 0 = 不在光束段，1 = 完整光束段，中间是进出渐变。 */
+    public static float beamBlend(int age) {
+        return Math.max(edgeBlend(age, BEAM_START, BEAM_END),
+                edgeBlend(age, BEAM2_START, BEAM2_END));
+    }
+
+    private static float edgeBlend(int age, int start, int end) {
+        if (age < start - BEAM_EDGE_TICKS || age > end + BEAM_EDGE_TICKS) {
+            return 0.0F;
+        }
+        if (age < start) {
+            return (age - (start - BEAM_EDGE_TICKS)) / (float) BEAM_EDGE_TICKS;
+        }
+        if (age <= end) {
+            return 1.0F;
+        }
+        return 1.0F - (age - end) / (float) BEAM_EDGE_TICKS;
     }
 
     /** 这一拍是不是「NOPE / too / late」那六个口头拍本身（HUD 把它们画成纯白键）。 */
@@ -192,6 +266,12 @@ public final class BrainrotBeats {
     public static final int SCORE_FROM = firstAtOrAfter(SCORE_START_TICK);
     /** 最后一个真实鼓点（约 99.1 秒）。 */
     public static final int SCORE_TO = 1999;
+
+    /** 光束阶段：28.5–57 秒、71–100 秒（和 {@code BrainrotCycle.FIRE_START} 那几个数对齐）。 */
+    private static final int BEAM_START = 574;
+    private static final int BEAM_END = 1140;
+    private static final int BEAM2_START = 1420;
+    private static final int BEAM2_END = 2000;
 
     /** 最后一段黑暗从这一该开始（100 秒）：从这里起不再放键，判定条慢慢淡出。 */
     public static final int FINAL_DARK = 100 * 20;
@@ -319,5 +399,17 @@ public final class BrainrotBeats {
     /** {@code age} 所在的是不是「真实鼓点区间」（前奏和收尾不计分）。 */
     public static boolean scores(int age) {
         return age >= SCORE_FROM && age <= SCORE_TO;
+    }
+
+    /**
+     * 「Nope / too / late」那一排字在屏幕上的窗口：在的话返回这一句的锚点刻（第一个词），
+     * 不在返回 -1。HUD 藏条 / 藏歌词、客户端压药水粒子，全都用这一个判断。
+     */
+    public static int speechAnchor(int age) {
+        int first = NO_TOO_LATE_FIRST;
+        int second = NO_TOO_LATE_SECOND;
+        int anchor = Math.abs(age - second) <= Math.abs(age - first) ? second : first;
+        int last = anchor + SPEECH_STEP * (SPEECH_WORDS.length - 1);
+        return age < anchor - 8 || age > last + 26 ? -1 : anchor;
     }
 }

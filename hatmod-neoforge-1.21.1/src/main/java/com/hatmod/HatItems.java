@@ -27,6 +27,14 @@ import java.util.List;
  * {@code hatmod:textures/models/armor/black_hat_layer_1.png}。
  */
 public final class HatItems {
+
+    /**
+     * 帽子的护甲值（原版头盔那一档）。
+     *
+     * <p>戴在**头盔槽**时由 {@code ArmorItem} 自己给；放在 **Curios 饰品栏**时 Curios 不结算
+     * 物品自带的护甲属性，由 {@code HatAbilities.applyCurioArmor} 按这个数补一条。
+     */
+    public static final int HAT_ARMOR = 2;
     public static final DeferredRegister<ArmorMaterial> ARMOR_MATERIALS =
             DeferredRegister.create(Registries.ARMOR_MATERIAL, HatMod.MOD_ID);
     public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(HatMod.MOD_ID);
@@ -79,7 +87,7 @@ public final class HatItems {
     private static DeferredHolder<ArmorMaterial, ArmorMaterial> material(String colorName) {
         return ARMOR_MATERIALS.register(colorName, () -> new ArmorMaterial(
                 new EnumMap<>(java.util.Map.of(
-                        ArmorItem.Type.HELMET, 2,
+                        ArmorItem.Type.HELMET, HAT_ARMOR,
                         ArmorItem.Type.CHESTPLATE, 0,
                         ArmorItem.Type.LEGGINGS, 0,
                         ArmorItem.Type.BOOTS, 0
@@ -168,6 +176,9 @@ public final class HatItems {
             @Override
             public void appendHoverText(ItemStack stack, Item.TooltipContext context,
                                         List<Component> tooltip, TooltipFlag flag) {
+                // 原版那句「护甲值 +2」在这里被整个覆写掉了（没调 super），自己补一行
+                tooltip.add(Component.translatable("item.hatmod.hat.armor", HAT_ARMOR)
+                        .withStyle(ChatFormatting.BLUE));
                 // 标语：「全」用专属的「新神已至」，三顶原色帽是「神本无相」；
                 // 脑蚀不摆那句，改标它这一整轮用的 BGM
                 if (this == BRAIN_HAT.get()) {

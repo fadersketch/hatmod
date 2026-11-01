@@ -147,6 +147,11 @@ final class BrainrotQte {
      * 用的是客户端报上来的 {@code age}（玩家照着 HUD 按的，就该按 HUD 的钟判）。
      */
     static void tick(ServerLevel level, LivingEntity wearer, int age) {
+        // 「Nope / too / late」这三拍由服务端替玩家按：这 1.4 秒眼睛该看的是字幕和
+        // Teto 的动作，不该在看不见的判定条上抢拍。
+        if (wearer instanceof ServerPlayer speechPlayer) {
+            autoTapSpeech(speechPlayer, age);
+        }
         // 判定用「服务端钟 + 客户端偏差」：和玩家按键那一下用同一个钟，
         // 才不会出现「按的明明踩上了、服务端却判 MISS」
         int judgeAge = age + skewOf(wearer.getUUID());
@@ -431,6 +436,20 @@ final class BrainrotQte {
         Round round = ROUNDS.get(player.getUUID());
         if (round != null) {
             round.assisted = true;
+        }
+        tap(player, age);
+    }
+
+    /**
+     * 「Nope / too / late」三拍**由服务端代按**。
+     *
+     * <p>走的是和手动按键完全一样的判定（所以连击照涨、也算 PERFECT、该回的血照回），
+     * 但**不记** {@code Round#assisted} —— 这一下不是玩家偷懒，是这三拍本来就不该他摁，
+     * 不能因此把整轮的「节奏大师」作废。
+     */
+    static void autoTapSpeech(ServerPlayer player, int age) {
+        if (!BrainrotBeats.isSpeechKey(age) || !player.isAlive()) {
+            return;
         }
         tap(player, age);
     }

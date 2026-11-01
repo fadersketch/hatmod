@@ -71,6 +71,11 @@ public class Teto extends PathfinderMob implements OwnableEntity {
     private static final double ORBIT_RADIUS = 4.0D;
     private static final double ORBIT_LINEAR_SPEED = 0.065D;
     private static final double ORBIT_SPEED = ORBIT_LINEAR_SPEED / ORBIT_RADIUS;
+
+    /** 轨道角速度（弧度/刻）：给召唤时算「停在正前方」的初始相位用。 */
+    static double orbitSpeed() {
+        return ORBIT_SPEED;
+    }
     /** 负面效果场半径。 */
     private static final double AURA_RADIUS = 12.0D;
     /** 多久上一次负面效果（刻）：0.5 秒一轮，比原来快一倍。 */
@@ -121,6 +126,10 @@ public class Teto extends PathfinderMob implements OwnableEntity {
      * 认了主人就一直跟着，不要求戴着脑蚀。
      */
     private boolean summoned;
+    /** 「这一轮已经结束了」连续出现了几刻（宽限期内不散场，见 tick）。 */
+    private int hatmodOrphanTicks;
+    /** 宽限多少刻才真的散场（3 秒）。 */
+    private static final int ORPHAN_GRACE_TICKS = 60;
 
     public Teto(EntityType<? extends Teto> type, Level level) {
         super(type, level);
@@ -271,6 +280,10 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         if (this.level().isClientSide) {
             return;
         }
+        // 登记进「删不掉」名册：破防模式下被外人删掉会被拉回来
+        HatAbilities.watchSummon(this);
+        // 再把实体管理器的回调包一层：绕过 remove()/setRemoved() 的删除也要拦得住
+        hatmodGuardLevelCallback();
         ServerLevel level = (ServerLevel) this.level();
         // 四只 Teto 各 tick 一次，tickTrails 内部按服务器刻去重，每刻只推进一次
         tickTrails(level);
@@ -282,31 +295,40 @@ public class Teto extends PathfinderMob implements OwnableEntity {
             if (this.summoned) {
                 // 召唤出来的 Teto 一旦找不到主人（下线 / 换维度 / 重进存档）就自己散掉。
                 // 以前这里会「改认最近的玩家」，结果旧 Teto 挂到别人身上、越积越多。
-                disappear(level);
+                disappear(level, "主人已不在这个世界（下线/换维度）");
                 return;
             }
             // 刷怪蛋 / 指令放出来的没有主人：认最近的玩家当主人（相位随手给一个，免得叠在一起）
             owner = level.getNearestPlayer(this, 32.0D);
             if (owner == null) {
-                disappear(level);
+                disappear(level, "32 格内没有可跟随的玩家");
                 return;
             }
             setOwnerUUID(owner.getUUID());
             this.orbitPhase = this.random.nextFloat() * (float) (Math.PI * 2.0D);
         }
-        // 曲子召唤出来的只活到这一轮结束（曲终 / 摘帽）；刷怪蛋放出来的跟着主人，直到主人死亡
+        // 曲子召唤出来的只活到这一轮结束（曲终 / 摘帽）；刷怪蛋放出来的跟着主人，直到主人死亡。
+        // 但**不能一断就走**：链路的 `AGES` 在「本轮结束 / 下一轮刚开」之间会有一拍是空的，
+        // 以前就是这一拍把所有 Teto 一起收掉，`checkTetos` 数到 0 判定团灭、于是重唱。
+        // 这里给 3 秒宽限：连续 60 刻都不属于任何一轮，才真的散场。
         if (this.summoned && !BrainrotCycle.isRunning(owner)) {
-            disappear(level);
+            if (++this.hatmodOrphanTicks >= ORPHAN_GRACE_TICKS) {
+                disappear(level, "连续 3 秒不属于任何一轮（链路早就收场了）");
+            }
             return;
         }
+        this.hatmodOrphanTicks = 0;
         if (owner.isDeadOrDying()) {
-            disappear(level);
+            disappear(level, "主人已经死亡");
             return;
         }
 
         this.orbit(owner);
         this.tauntNearby(level, owner);
-        if (this.tickCount % AURA_PERIOD == 0) {
+        // 「Nope, too late」那一段画面上只该有那三个词和 Teto 本人：
+        // 负面场、光环增益、打拍烟花全部停手 —— 火花和粒子都会糊住那一下小动作。
+        boolean calm = BrainrotBeats.speechAnchor(this.tickCount) >= 0;
+        if (!calm && this.tickCount % AURA_PERIOD == 0) {
             this.applyAura(level, owner);
             this.maybeBuffOwner(level, owner);
             this.maybeComboBuffOwner(level, owner);
@@ -447,11 +469,15 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         // 「No too late」弹字期间不推进角度：停在圆周上的当前位置，只跟着主人平移
         // （与玩家相对静止）。上下微浮也挂在同一个角度上，所以会一起定住；文字一淡出就接着转。
         if (!(this.summoned && BrainrotCycle.tetoOrbitFrozen(owner))) {
-            this.orbitAngle += ORBIT_SPEED;
+            // 光束期转两倍快：光柱在放的时候，绕圈的节拍也跟着提上来
+            this.orbitAngle += ORBIT_SPEED * (this.summoned ? BrainrotCycle.orbitSpeedScale(owner) : 1.0D);
         }
         double angle = this.orbitAngle + this.orbitPhase;
-        double x = center.x + Math.cos(angle) * ORBIT_RADIUS;
-        double z = center.z + Math.sin(angle) * ORBIT_RADIUS;
+        // 光束期半径会呼吸：一边绕圈一边往外扩、再收回来
+        double radius = this.summoned
+                ? ORBIT_RADIUS * BrainrotCycle.orbitRadiusScale(owner) : ORBIT_RADIUS;
+        double x = center.x + Math.cos(angle) * radius;
+        double z = center.z + Math.sin(angle) * radius;
         // 上下微浮也挂在同一个角度上：不要再用 tickCount，否则 tickCount 一旦重新计数
         // （客户端重新加进世界时会从 0 开始）画面上就会突然弹一下。
         double y = center.y - this.getBbHeight() * 0.5D
@@ -717,12 +743,32 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         level.playSound(null, owner.getX(), owner.getY(), owner.getZ(),
                 SoundEvents.AMETHYST_BLOCK_CHIME, SoundSource.PLAYERS, 0.7F, 1.45F);
     }
+    /**
+     * 发增益只用一张白名单。
+     *
+     * <p>「原版所有 {@code isBeneficial()}」这个挑法会抽到名义上算增益、实战里是负收益的东西：
+     * 原版就把**飘浮**登记成增益（{@code MobEffectCategory.BENEFICIAL}），一挂上人就开始往上飘，
+     * 近战够不着、光束也打歪；模组效果更没法预判（「飞升」那一类）。所以只认下面这些 ——
+     * 都是纯战斗 / 续航用得上、且不会改变站位和朝向的。
+     */
+    private static final java.util.Set<String> COMBAT_BUFFS = new java.util.HashSet<>(
+            java.util.Arrays.asList(
+                    "speed", "haste", "strength", "jump_boost", "regeneration", "resistance",
+                    "fire_resistance", "absorption", "health_boost", "water_breathing",
+                    "night_vision", "luck", "dolphins_grace", "conduit_power", "saturation",
+                    "hero_of_the_village", "slow_falling"));
+
+    private static boolean isRealBuff(MobEffect effect) {
+        var key = BuiltInRegistries.MOB_EFFECT.getKey(effect);
+        return key != null && COMBAT_BUFFS.contains(key.getPath());
+    }
+
     /** 原版所有「增益、非瞬时」效果，只算一次。 */
     private static List<MobEffect> beneficialEffects() {
         if (beneficial == null) {
             List<MobEffect> found = new ArrayList<>();
             for (MobEffect effect : BuiltInRegistries.MOB_EFFECT) {
-                if (effect.isBeneficial() && !effect.isInstantenous()) {
+                if (effect.isBeneficial() && !effect.isInstantenous() && isRealBuff(effect)) {
                     found.add(effect);
                 }
             }
@@ -747,10 +793,29 @@ public class Teto extends PathfinderMob implements OwnableEntity {
 
     /** 消失：撒一团黑烟走人。 */
     public void disappear(ServerLevel level) {
+        disappear(level, "未说明");
+    }
+
+    /**
+     * 消失，并记下**是谁**让它走的。
+     *
+     * <p>以前这里一律写「tick 里自己收掉」，可曲终清场（{@code HatSummons.clearTetos}）
+     * 走的也是这个方法 —— 日志看上去像 Teto 自己撑不住，实际是链路收场顺手把它收了。
+     */
+    public void disappear(ServerLevel level, String why) {
+        if (this.hatmodSelfRemoval) {
+            return;                 // 已经散过场：别再撒粒子、别再刷日志
+        }
+        if (HatMod.LOGGER.isWarnEnabled()) {
+            HatMod.LOGGER.warn("[hatmod] Teto 散场（{}，owner={}，血量 {}/{}）",
+                    why,
+                    this.getOwner() == null ? "无" : this.getOwner().getName().getString(),
+                    this.getHealth(), this.getMaxHealth());
+        }
         level.sendParticles(ParticleTypes.SQUID_INK,
                 this.getX(), this.getY() + this.getBbHeight() * 0.5D, this.getZ(),
                 16, 0.4D, 0.8D, 0.4D, 0.03D);
-        this.discard();
+        this.hatmodDismiss();
     }
 
     // ------------------------------------------------------------------
@@ -771,8 +836,264 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         return false;
     }
 
+    /**
+     * 破防模式下不接受「位移式删除」。
+     *
+     * <p>Witheria 的 {@code DeathProcedure} 删实体分两步：先 {@code discard()}（被我们的
+     * {@link #remove} 拦下），再把实体 {@code moveTo(x + 10000, -4096, z + 10000)} ——
+     * 甩到世界角落的虚空里。那个区块不加载，实体就从实体表里消失，于是
+     * {@code checkTetos} 一直数到 0、每 0.5 秒补一批，全堆在虚空里。
+     */
+    @Override
+    public void moveTo(double x, double y, double z) {
+        if (this.hatmodRejectTeleport(x, y, z)) {
+            return;
+        }
+        super.moveTo(x, y, z);
+    }
+
+    @Override
+    public void moveTo(double x, double y, double z, float yRot, float xRot) {
+        if (this.hatmodRejectTeleport(x, y, z)) {
+            return;
+        }
+        super.moveTo(x, y, z, yRot, xRot);
+    }
+
+    /**
+     * 这个落点要不要拒。
+     *
+     * <p>只拒「被甩出去」那一种：主人还在身边，落点却已经在 96 格以外（或者在世界最低高度
+     * 以下）。主人自己传送走了不算 —— 那时候主人不在身边，是我们在追他，必须放行。
+     */
+    private boolean hatmodRejectTeleport(double x, double y, double z) {
+        if (!HatSettings.forceBreak() || this.hatmodSelfRemoval) {
+            return false;
+        }
+        if (!(this.level() instanceof ServerLevel server)) {
+            return false;
+        }
+        LivingEntity owner = this.getOwner();
+        boolean ownerNearby = owner != null && this.distanceToSqr(owner) < 128.0D * 128.0D;
+        boolean intoVoid = y < server.getMinBuildHeight() - 16.0D;
+        boolean farFromOwner = false;
+        if (owner != null) {
+            double dx = x - owner.getX();
+            double dz = z - owner.getZ();
+            farFromOwner = dx * dx + dz * dz > 96.0D * 96.0D;
+        }
+        if (!intoVoid && !(ownerNearby && farFromOwner)) {
+            return false;
+        }
+        if (this.hatmodTeleportLogged++ < 5) {
+            HatMod.LOGGER.warn("[hatmod] 拦下对 Teto 的搬移 → ({}, {}, {})"
+                            + "（破防模式下不接受位移式删除）",
+                    Math.round(x), Math.round(y), Math.round(z));
+        }
+        return true;
+    }
+
+    /** 「拦下搬移」这条日志已经打过几次。 */
+    private int hatmodTeleportLogged;
+
+    /**
+     * 破防模式下「打不过就加入」：外部想删我们一律不认（pig2 那招），自己的退场走内部开关。
+     *
+     * <p>别的模组的 killEntity / discard / 实体表清理最终都是调 {@code setRemoved}，
+     * 把这里挡住它们就删不掉。正常死亡（KILLED）不受影响。
+     */
+    private boolean hatmodSelfRemoval;
+    /** 已经打过几次「拦下删除」的日志（别刷屏）。 */
+    private int hatmodRemovalLogged;
+    /** 把它打死的那一位：尸体被删前的那一秒用来反噬。 */
+    private Entity hatmodKiller;
+
+    @Override
+    public void remove(net.minecraft.world.entity.Entity.RemovalReason reason) {
+        // 破防模式：外来的 killEntity / discard / 实体表清理 / setRemoved(KILLED) 一律不认，
+        // 只有「自己收场」和「区块卸载」放行（后者不放行会卡住存档和维度切换）。
+        // 平时不拦 —— 该被打死就被打死，链路跟着正常收场。
+        if (HatSettings.forceBreak() && !this.hatmodSelfRemoval
+                && reason != net.minecraft.world.entity.Entity.RemovalReason.UNLOADED_TO_CHUNK
+                && this.level() instanceof ServerLevel) {
+            if (hatmodRemovalLogged++ < 5) {
+                HatMod.LOGGER.warn("[hatmod] 拦下对 Teto 的 remove({})，调用方 {}",
+                        reason, hatmodForeignCaller() == null ? "原版流程" : hatmodForeignCaller());
+            }
+            return;
+        }
+        super.remove(reason);
+    }
+    /** 把实体管理器挂在我们身上的回调包一层（见 {@link #GuardedCallback}）。 */
+    private void hatmodGuardLevelCallback() {
+        if (!HatSettings.forceBreak() || this.hatmodSelfRemoval) {
+            return;
+        }
+        try {
+            java.lang.reflect.Field field = com.hatmod.HatAbilities.fieldOfType(
+                    net.minecraft.world.entity.Entity.class,
+                    net.minecraft.world.level.entity.EntityInLevelCallback.class);
+            if (field == null) {
+                return;
+            }
+            Object current = field.get(this);
+            if (current instanceof GuardedCallback) {
+                return;
+            }
+            if (current instanceof net.minecraft.world.level.entity.EntityInLevelCallback original) {
+                field.set(this, new GuardedCallback(original));
+            }
+        } catch (Throwable ignored) {
+            // 装不上就算了，remove() 那道门还在
+        }
+    }
+
+    /**
+     * 实体管理器的回调包装。
+     *
+     * <p>真正把实体从 level 里摘掉的是 {@code EntityInLevelCallback#onRemove} ——
+     * `remove()` 和 `setRemoved()` 的最后一步都是它。有的模组（Witheria 那种）绕过这两个
+     * 方法直接调它、或者写 removalReason 再调它，所以这一层也必须挡住，破防模式下才算
+     * 真的「pig2 级」。自己的退场（{@link #hatmodDismiss}）和区块卸载照常放行。
+     */
+    private final class GuardedCallback implements net.minecraft.world.level.entity.EntityInLevelCallback {
+        private final net.minecraft.world.level.entity.EntityInLevelCallback original;
+
+        private GuardedCallback(net.minecraft.world.level.entity.EntityInLevelCallback original) {
+            this.original = original;
+        }
+
+        @Override
+        public void onMove() {
+            original.onMove();
+        }
+
+        /** 已经拦过几次（只打前几条日志，避免刷屏）。 */
+        private int hatmodBlocked;
+
+        @Override
+        public void onRemove(net.minecraft.world.entity.Entity.RemovalReason reason) {
+            if (hatmodSelfRemoval
+                    || reason == net.minecraft.world.entity.Entity.RemovalReason.UNLOADED_TO_CHUNK) {
+                original.onRemove(reason);
+                return;
+            }
+            if (this.hatmodBlocked++ < 5) {
+                HatMod.LOGGER.warn("[hatmod] 拦下对 Teto 的外部删除（{}），破防模式下不认账",
+                        reason);
+            }
+        }
+    }
+
+
+
+
+    /**
+     * 帽子本体自己收掉（到期 / 卸下 / 换帽）的那一刻。
+     *
+     * <p>先把内部退场标记打上（这样 {@link #remove} 的防盗门不会拦自己），
+     * 再放一发「尾杀」—— 周围一圈外人陪着一起走，完全照 pig2 的 L4。
+     */
+    public void hatmodDismiss() {
+        if (!this.hatmodSelfRemoval) {
+            this.hatmodSelfRemoval = true;
+            HatAbilities.forgetSummon(this);
+            HatAbilities.retaliate(this, this.hatmodKiller);
+        }
+        // 不再早退：已经标过「散场」的也要**保证**真的离开世界。
+        // 以前第二次调用直接 return，第一次要是没删干净，这只就成了永远清不掉的影子。
+        this.discard();
+        if (!this.isRemoved()) {
+            HatAbilities.forceRemoveEntity(this);
+        }
+    }
+
+    /**
+     * pig2 那招：外部想把我们写死（{@code setHealth(0)}）一律不认。
+     *
+     * <p>很多 Boss 不走 {@code hurt}，直接 {@code setHealth} 清血；只挡伤害是挡不住的。
+     */
+
+    /**
+     * 照 pig2 那招看调用栈：把这次调用的**外部发起者**找出来。
+     *
+     * <p>pig2 就是用 {@code isCalledFromOtherModWithinN} 这类栈检查认「是不是别的模组在动我」，
+     * 然后直接不认账。我们这边防御本身更狠（破防模式下除了自己的退场全挡），
+     * 但「凶手是谁」看不出来 —— 尤其是 {@code setHealth(0)} 这种不带伤害来源的路径。
+     * 这个方法只用来打日志定位。
+     *
+     * @return 第一个非原版 / 非本模组的调用方类名；找不到返回 null
+     */
+    private static String hatmodForeignCaller() {
+        StackTraceElement[] stack = new Throwable().getStackTrace();
+        for (int i = 2; i < Math.min(stack.length, 20); i++) {
+            String cls = stack[i].getClassName();
+            if (cls.startsWith("com.hatmod.") || cls.startsWith("net.minecraft.")
+                    || cls.startsWith("net.minecraftforge.") || cls.startsWith("net.neoforged.")
+                    || cls.startsWith("java.") || cls.startsWith("jdk.") || cls.startsWith("sun.")) {
+                continue;
+            }
+            return cls;
+        }
+        return null;
+    }
+
+    /** 已经打过几次「挨打 / 死亡」日志（只打前几条）。 */
+    private int hatmodHitLogged;
+    /**
+     * 破防模式下恒为「活着」：血被外部直接写 0、或者对方绕过 hurt 调 die，
+     * 也不能让 {@code isAlive()} 变成 false —— 链路一看到它「死了」就会判定团灭重唱。
+     */
+    @Override
+    public boolean isAlive() {
+        if (HatSettings.forceBreak() && !this.hatmodSelfRemoval) {
+            return true;
+        }
+        return super.isAlive();
+    }
+
+    @Override
+    public void setHealth(float health) {
+        // 破防模式：只准涨不准跌（很多 Boss 不走 hurt，直接 setHealth 清血）
+        if (HatSettings.forceBreak() && !this.hatmodSelfRemoval && health < this.getHealth()) {
+            if (hatmodHitLogged++ < 5) {
+                String caller = hatmodForeignCaller();
+                HatMod.LOGGER.warn("[hatmod] Teto 被写血 {} -> {}（调用方 {}），破防模式下不认账",
+                        Math.round(this.getHealth()), Math.round(health),
+                        caller == null ? "原版流程" : caller);
+            }
+            return;
+        }
+        super.setHealth(health);
+    }
+
+    /** 这一下是不是玩家 / 自己人打的（破防模式下对它们完全免疫）。 */
+    private boolean hatmodFriendlyStrike(DamageSource source) {
+        Entity attacker = source.getEntity();
+        if (attacker instanceof net.minecraft.world.entity.player.Player) {
+            return true;
+        }
+        if (attacker instanceof HatSummon || attacker instanceof Teto) {
+            return true;
+        }
+        LivingEntity owner = this.getOwner();
+        return owner != null && attacker instanceof LivingEntity living
+                && HatAbilities.isFriendlyTo(owner, living);
+    }
+
     @Override
     public boolean hurt(DamageSource source, float amount) {
+        // 破防模式 = pig2 级：完全打不动（尾杀放在「本体自己收掉」的那一刻）
+        if (HatSettings.forceBreak()) {
+            if (hatmodHitLogged++ < 5) {
+                String caller = hatmodForeignCaller();
+                HatMod.LOGGER.warn("[hatmod] Teto 挨了 {} 的一下（{}，{} 点，调用方 {}），破防模式下免疫",
+                        source.getEntity() == null ? "未知来源" : source.getEntity().getName().getString(),
+                        source.getMsgId(), Math.round(amount),
+                        caller == null ? "原版流程" : caller);
+            }
+            return false;
+        }
         boolean hurt = super.hurt(source, amount);
         // 受击反馈：原版「打到人」的那团暗红粒子（Player.attack 同款同参数），
         // 挨打看得见，不会再「默默掉血」了
@@ -792,7 +1113,31 @@ public class Teto extends PathfinderMob implements OwnableEntity {
                     this.getX(), this.getY() + this.getBbHeight() * 0.5D, this.getZ(),
                     16, 0.4D, 0.8D, 0.4D, 0.03D);
         }
-        super.die(source);
+        this.hatmodKiller = source.getEntity();
+        if (HatMod.LOGGER.isWarnEnabled()) {
+            HatMod.LOGGER.warn("[hatmod] Teto 收到死亡事件（{} 造成，{}）{}",
+                    source.getEntity() == null ? "未知来源" : source.getEntity().getName().getString(),
+                    source.getMsgId(),
+                    HatSettings.forceBreak() ? "，破防模式下忽略" : "");
+        }
+        // 破防模式：**不调 super.die** —— 它会把 dead 标记置上，别的模组一看「死了」就来删，
+        // 而 remove 又被我们挡着，实体就卡成「已死但还在」，链路反而判不出团灭。
+        // 这一模式下的退场只走 hatmodDismiss（到期 / 卸帽 / 换帽那一刻）。
+        if (!HatSettings.forceBreak()) {
+            super.die(source);
+        }
+    }
+
+    /**
+     * 尸体即将被删除的那一秒（{@code deathTime == 19}，下一 tick 就 remove）：
+     * 破防模式下放 pig2 同款反噬。
+     */
+    @Override
+    protected void tickDeath() {
+        if (this.deathTime == 19) {
+            HatAbilities.retaliate(this, this.hatmodKiller);
+        }
+        super.tickDeath();
     }
 
     @Override

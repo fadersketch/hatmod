@@ -34,6 +34,8 @@ public final class HatSummons {
     public static final int SUMMON_COUNT = 4;
     /** 换位承伤时，离戴帽者最远多少格内的虚影可以被拉过来。 */
     public static final double SWAP_RANGE = 48.0D;
+    /** 虚影的持续时间（刻）：10 秒 —— 照射结束那一刻才召唤，所以这就是它待在世上的全部时间。 */
+    public static final int SHADE_LIFE_TICKS = 200;
 
     private static final DeferredRegister<EntityType<?>> ENTITY_TYPES =
             DeferredRegister.create(ForgeRegistries.ENTITY_TYPES, HatMod.MOD_ID);
@@ -74,12 +76,23 @@ public final class HatSummons {
     /**
      * 在召唤者周围放一圈虚影，每个立刻开始绕最近敌人转圈。
      *
-     * <p>虚影<b>不戴帽子</b>：这样 {@code HatAbilities} 的状态机不会接管它们（也就不会发射光柱），
-     * 它们只是「会嘲讽、会替挡刀、绕着敌人转的影子」。
+     * <p>虚影头上戴着真的「全」帽子，但 {@code HatAbilities} 的状态机会跳过 {@code HatSummon}，
+     * 所以它们不会自己蓄力开火 —— 它们只负责绕圈、嘲讽、替挡刀，外加自己那道小光柱。
      *
-     * @param lifeTicks 寿命，等于主人这一轮的照射刻数
+     * @param lifeTicks 寿命（调用方传 {@link #SHADE_LIFE_TICKS}，10 秒）
+     * @param route     主人这一轮「全」走的路线：分身的帧伤按这条路线取配置
      */
-    static void summonAll(ServerLevel level, LivingEntity owner, int lifeTicks) {
+    static void summonAll(ServerLevel level, LivingEntity owner, int lifeTicks, HatType route) {
+        // 分身不能再召唤分身。它现在头上戴着真的「全」帽子，但 HatAbilities 的状态机
+        // 本来就会跳过 HatSummon（见那边的 tick 开头）；这里再兜一道，
+        // 以后就算加了别的调用点也不会滚雪球。
+        if (owner instanceof HatSummon) {
+            return;
+        }
+        // 上一批还没走完就不再放新的一批：宁可让旧的把剩下的寿命走完，也不叠成 8 个
+        if (nearest(level, owner) != null) {
+            return;
+        }
         EntityType<HatSummon> type = SUMMON.get();
         double step = Math.PI * 2.0D / SUMMON_COUNT;
         for (int i = 0; i < SUMMON_COUNT; i++) {
@@ -91,7 +104,7 @@ public final class HatSummons {
             // 先摆在召唤者周围一圈，第一刻的 orbit() 会把它们带到敌人身边
             summon.moveTo(owner.getX() + Math.cos(phase) * 1.2D, owner.getY(),
                     owner.getZ() + Math.sin(phase) * 1.2D, owner.getYRot(), 0.0F);
-            summon.init(owner, lifeTicks, phase);
+            summon.init(owner, lifeTicks, phase, route);
             level.addFreshEntity(summon);
             level.sendParticles(ParticleTypes.SQUID_INK,
                     summon.getX(), summon.getY() + summon.getBbHeight() * 0.5D, summon.getZ(),
@@ -147,26 +160,56 @@ public final class HatSummons {
             }
         }
         for (Teto teto : leftovers) {
-            teto.discard();
+            teto.hatmodDismiss();
         }
+        int added = 0;
         double step = Math.PI * 2.0D / TETO_MAX_PER_PLAYER;
+        // 相位对齐：让「第一次 Nope, too late」那一刻，四只正好落在玩家的**四条斜向** ——
+        // 第 0 只右前，其余三只彼此差 90°，同一刻分别在右后 / 左后 / 左前。
+        // 斜向 = 正前方再转 45°；正前 / 正后会被自己的模型和判定条挡住。
+        //
+        // 轨道角 a 处的世界坐标是 (cos a, sin a)；玩家朝向前方的方向向量是
+        // (-sin yaw, cos yaw)，所以「正前方」对应的轨道角是 yaw + 90°。
+        // 轨道每刻转 orbitSpeed，到目标刻一共转 orbitSpeed * targetTick —— 反推初始相位即可。
+        double targetTick = BrainrotCycle.firstTextTick();
+        double frontAngle = Math.toRadians(owner.getYRot()) + Math.PI / 2.0D;
+        double basePhase = frontAngle - Teto.orbitSpeed() * targetTick;
         for (int i = 0; i < TETO_MAX_PER_PLAYER; i++) {
             Teto teto = type.create(level);
             if (teto == null) {
                 continue;
             }
-            double phase = step * i;
+            double phase = basePhase + step * i + Math.PI / 4.0D;
             teto.moveTo(owner.getX() + Math.cos(phase) * 2.0D, owner.getY(),
                     owner.getZ() + Math.sin(phase) * 2.0D, owner.getYRot(), 0.0F);
             teto.init(owner, phase);
-            level.addFreshEntity(teto);
+            if (level.addFreshEntity(teto)) {
+                added++;
+            }
+            if (SPAWN_WARNINGS < 5) {
+                int near = level.getEntitiesOfClass(Teto.class,
+                        owner.getBoundingBox().inflate(8.0D)).size();
+                HatMod.LOGGER.warn("[hatmod] Teto 刚放进去：pos=({},{},{}) removed={} 同层={} 8格内={}",
+                        Math.round(teto.getX() * 10) / 10.0, Math.round(teto.getY() * 10) / 10.0,
+                        Math.round(teto.getZ() * 10) / 10.0, teto.isRemoved(),
+                        teto.level() == level, near);
+            }
             level.sendParticles(ParticleTypes.SCULK_SOUL,
                     teto.getX(), teto.getY() + teto.getBbHeight() * 0.5D, teto.getZ(),
                     12, 0.3D, 0.7D, 0.3D, 0.01D);
         }
         level.playSound(null, owner.getX(), owner.getY(), owner.getZ(),
                 SoundEvents.WARDEN_SONIC_CHARGE, SoundSource.PLAYERS, 0.7F, 1.4F);
+        if (added < TETO_MAX_PER_PLAYER && SPAWN_WARNINGS++ < 10) {
+            HatMod.LOGGER.warn("[hatmod] Teto 只放进去了 {} / {} 只（位置 {},{},{}，主人 {}）",
+                    added, TETO_MAX_PER_PLAYER,
+                    Math.round(owner.getX()), Math.round(owner.getY()), Math.round(owner.getZ()),
+                    owner.getName().getString());
+        }
     }
+
+    /** 「没放满」这条日志已经打过几次。 */
+    private static int SPAWN_WARNINGS;
 
     /** 曲终 / 摘帽：把这一轮召唤的 Teto 全部收掉。 */
     static void clearTetos(ServerLevel level, LivingEntity owner) {
@@ -174,7 +217,7 @@ public final class HatSummons {
                 owner.getBoundingBox().inflate(64.0D),
                 teto -> teto.isOwnedBy(owner) && teto.isSummoned());
         for (Teto teto : found) {
-            teto.disappear(level);
+            teto.disappear(level, "曲终/摘帽清场");
         }
     }
 }

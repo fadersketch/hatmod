@@ -53,6 +53,8 @@
   "hatmod.tuner.off": "关",
   "hatmod.tuner.on": "开",
   "hatmod.tuner.ownBgm": "自己的 BGM 优先",
+  "hatmod.tuner.forceBreak": "破防",
+  "hatmod.forcebreak.warning": "破防模式已开启：这是作弊级模式 —— 会接管敌方血量、绕过死亡机制、必要时强行摘除实体。\n演出、掉落、Boss 条和存档都可能出问题，后果自负。",
   "hatmod.tuner.ratio": "附加百分比（当前生命）",
   "hatmod.tuner.recipeDrill": "神秘红毛钻头",
   "hatmod.tuner.recipeHat": "脑蚀（4 个钻头）",
@@ -103,5 +105,6 @@
   "advancement.hatmod.immovable.description": "红帽蓄力全程一次没被打中，照常放出光柱。",
   "advancement.hatmod.trinity.title": "三色归一",
   "advancement.hatmod.trinity.description": "让「全」把黑、白、红三条路线都走一遍。",
-  "hatmod.tuner.autoTap": "自动打拍"
+  "hatmod.tuner.autoTap": "自动打拍",
+  "item.hatmod.hat.armor": "护甲值 +%s"
 }

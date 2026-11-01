@@ -28,6 +28,14 @@ import java.util.List;
  * 所以四种颜色各自实现一份材质，只是名字不同。
  */
 public final class HatItems {
+
+    /**
+     * 帽子的护甲值（原版头盔那一档）。
+     *
+     * <p>戴在**头盔槽**时由 {@code ArmorItem} 自己给；放在 **Curios 饰品栏**时 Curios 不结算
+     * 物品自带的护甲属性，由 {@code HatAbilities.applyCurioArmor} 按这个数补一条。
+     */
+    public static final int HAT_ARMOR = 2;
     public static final DeferredRegister<Item> ITEMS =
             DeferredRegister.create(ForgeRegistries.ITEMS, HatMod.MOD_ID);
 
@@ -153,6 +161,9 @@ public final class HatItems {
             @Override
             public void appendHoverText(ItemStack stack, Level level,
                                         List<Component> tooltip, TooltipFlag flag) {
+                // 原版那句「护甲值 +2」在这里被整个覆写掉了（没调 super），自己补一行
+                tooltip.add(Component.translatable("item.hatmod.hat.armor", HAT_ARMOR)
+                        .withStyle(ChatFormatting.BLUE));
                 // 标语：「全」用专属的「新神已至」，三顶原色帽是「神本无相」；
                 // 脑蚀不摆那句，改标它这一整轮用的 BGM
                 if (this == BRAIN_HAT.get()) {
@@ -223,7 +234,7 @@ public final class HatItems {
 
         @Override
         public int getDefenseForType(ArmorItem.Type type) {
-            return type == ArmorItem.Type.HELMET ? 2 : 0;
+            return type == ArmorItem.Type.HELMET ? HAT_ARMOR : 0;
         }
 
         @Override

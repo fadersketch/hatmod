@@ -17,6 +17,8 @@ public final class ClientHatSettings {
 
     /** 全局开关「自己的 BGM 优先」，随服务端同步过来；没同步前按出厂默认（开启）。 */
     private static boolean ownBgmPriority = HatSettings.DEFAULT_OWN_BGM_PRIORITY;
+    /** 「破防模式」在客户端的镜像（只给调参器显示用，真正生效的判定在服务端）。 */
+    private static boolean forceBreak = HatSettings.DEFAULT_FORCE_BREAK;
 
     /** 「全」三条路线的帧伤，随服务端同步过来；没同步前按出厂值（12/10/15）。 */
     private static float routeDamageBlack = HatSettings.DEFAULT_ROUTE_DAMAGE_BLACK;
@@ -36,8 +38,16 @@ public final class ClientHatSettings {
         return ownBgmPriority;
     }
 
+    public static boolean forceBreak() {
+        return forceBreak;
+    }
+
     public static void setOwnBgmPriority(boolean value) {
         ownBgmPriority = value;
+    }
+
+    public static void setForceBreak(boolean value) {
+        forceBreak = value;
     }
 
     public static float routeDamage(HatType route) {
@@ -123,6 +133,7 @@ public final class ClientHatSettings {
                     snapshot.healthDamageRatio(), snapshot.healthDamageFloor(), snapshot.damageType());
         }
         ownBgmPriority = msg.ownBgmPriority();
+        forceBreak = msg.forceBreak();
         brainrotDamageScale = msg.brainrotDamageScale();
         setRoute(msg.route().black(), msg.route().white(), msg.route().red(), msg.route().forcedRoute());
 

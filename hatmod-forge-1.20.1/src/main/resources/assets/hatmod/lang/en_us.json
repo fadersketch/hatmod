@@ -53,6 +53,8 @@
   "hatmod.tuner.off": "OFF",
   "hatmod.tuner.on": "ON",
   "hatmod.tuner.ownBgm": "Own BGM priority",
+  "hatmod.tuner.forceBreak": "Force break",
+  "hatmod.forcebreak.warning": "Force-break enabled: this is a cheat-level mode. It takes over enemy health, bypasses death logic and may forcibly remove entities.\nAnimations, drops, boss bars and saves can break. Use at your own risk.",
   "hatmod.tuner.ratio": "Extra % of current HP",
   "hatmod.tuner.recipeDrill": "Mysterious Red Drill",
   "hatmod.tuner.recipeHat": "Brainrot (4 drills)",
@@ -103,5 +105,6 @@
   "advancement.hatmod.immovable.description": "Finish a red hat charge without taking a hit.",
   "advancement.hatmod.trinity.title": "Trinity",
   "advancement.hatmod.trinity.description": "Take the black, white and red routes with the All hat.",
-  "hatmod.tuner.autoTap": "Auto tap"
+  "hatmod.tuner.autoTap": "Auto tap",
+  "item.hatmod.hat.armor": "Armor +%s"
 }

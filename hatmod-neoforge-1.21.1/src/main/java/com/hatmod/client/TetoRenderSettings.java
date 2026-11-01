@@ -14,14 +14,15 @@ import java.nio.file.Path;
 /**
  * Teto 的渲染参数（**纯客户端**，不进服务端那份 {@code config/hatmod.json}）。
  *
- * <p>显存的大头不是「播放多快」，而是那张 992 帧序列图本身：
- * 原图 4042×4056，解压后约 **65 MB**（RGBA），帧率再怎么降也不会少一个字节。
+ * <p>显存的大头不是「播放多快」，而是那张序列图本身。裁帧之后只剩 284 帧，省下来的预算
+ * 全砸在分辨率上：现在是 284 帧、4080×3672、每格 170×306，解压后约 **57 MB**（RGBA）
+ * —— 和最早那版 992 帧、4042×4056 的 65 MB 差不多，但每一帧比 94×169 时代大一倍多。
  * 所以这里拆成两个互不影响的旋钮：
  * <ul>
  *   <li><b>帧率</b>：{@link #frameTicks()}（每帧占几刻）+ {@link #frameStep()}（每次跨几帧），
  *       实际帧率 = 20 / (frameTicks × frameStep)。只影响观感，不影响显存。</li>
  *   <li><b>画质</b>：{@link #quality()} 选哪张贴图 —— 0 原尺寸 / 1 一半 / 2 四分之一，
- *       显存分别约 65 MB / 16 MB / 4 MB（含 mipmap 会再高一点）。</li>
+ *       显存分别约 57 MB / 14 MB / 4 MB（含 mipmap 会再高一点）。</li>
  * </ul>
  * 于是「低帧率 + 高画质」（帧步进拉大、画质 0）和「高帧率 + 省显存」都能单独试。
  *
@@ -32,8 +33,20 @@ public final class TetoRenderSettings {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final String FILE_NAME = "hatmod-client.json";
 
-    /** 序列图一共多少帧（和 TetoRenderer 的排布一致）。 */
-    public static final int FRAME_COUNT = 992;
+    /** 序列图里**一共存了**多少帧（和 TetoRenderer 的排布一致）。 */
+    public static final int FRAME_COUNT = 284;
+
+    /**
+     * 前奏帧数：这 143 帧只播一次 —— 里面含着「Nope, too late」那一下的特殊动作，
+     * 之后整段动作就是重复的了。
+     */
+    public static final int INTRO_FRAMES = 143;
+
+    /**
+     * 循环帧数：第 143 帧起每 141 帧一模一样（实测 {@code diff(i, i+141) < 1}），
+     * 所以在这一段里无限循环，接缝看不出来。
+     */
+    public static final int LOOP_FRAMES = 141;
 
     public static final int DEFAULT_FRAME_TICKS = 2;
     public static final int DEFAULT_FRAME_STEP = 1;
@@ -52,11 +65,21 @@ public final class TetoRenderSettings {
     private TetoRenderSettings() {
     }
 
-    /** 第 {@code tickCount} 刻该显示第几帧。 */
+    /**
+     * 第 {@code tickCount} 刻该显示第几帧。
+     *
+     * <p>两段式：前 {@link #INTRO_FRAMES} 帧只播一次（含那一下特殊动作），
+     * 之后在 {@link #LOOP_FRAMES} 帧里循环。原来是 992 帧整段 {@code %} 循环 ——
+     * 那时前 141 帧的"前奏"会在 99 秒后重播一次，现在它只出现一次，而且显存省了三分之一还多。
+     */
     public static int frameIndex(int tickCount) {
         ensureLoaded();
         int step = Math.max(1, frameTicks) * Math.max(1, frameStep);
-        return (tickCount / step) % FRAME_COUNT;
+        int played = Math.max(0, tickCount / step);
+        if (played < INTRO_FRAMES) {
+            return played;
+        }
+        return INTRO_FRAMES + (played - INTRO_FRAMES) % LOOP_FRAMES;
     }
 
     /** 当前画质对应的贴图。 */
@@ -119,7 +142,7 @@ public final class TetoRenderSettings {
     }
 
     /** 三档画质对应的贴图尺寸（宽, 高），只用于界面显示。 */
-    private static final int[][] SHEET_SIZE = {{4042, 4056}, {2021, 2028}, {1010, 1014}};
+    private static final int[][] SHEET_SIZE = {{4080, 3672}, {2040, 1836}, {1020, 918}};
 
     /**
      * 调参器上那一行说明：**具体多少帧/秒、具体多大分辨率**，别让人去猜 0~2 是什么。

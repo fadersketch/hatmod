@@ -5,6 +5,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -17,6 +18,10 @@ import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.Entity.RemovalReason;
+import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
+import net.minecraftforge.event.entity.EntityJoinLevelEvent;
+import net.minecraft.world.level.entity.EntityInLevelCallback;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
@@ -42,6 +47,7 @@ import net.minecraft.world.scores.Team;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.living.LivingChangeTargetEvent;
 import net.minecraftforge.event.entity.living.LivingEvent;
+import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.living.LivingHurtEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.server.ServerStartedEvent;
@@ -49,13 +55,18 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.common.Mod;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.jetbrains.annotations.Nullable;
 
 /**
  * 帽子的核心技能状态机，对**任何戴帽子的生物**生效（玩家、车万女仆等）。
@@ -206,6 +217,9 @@ public final class HatAbilities {
     private static final UUID ENCHANT_ARMOR_ID = UUID.fromString("6f2d1e64-9c3a-4a4f-8b1e-2a7c5d9e0b31");
     /** 附魔护甲修饰符的名字（1.20.1 的 AttributeModifier 需要它；1.21 已去掉）。 */
     private static final String ENCHANT_ARMOR_NAME = "hatmod_enchant_armor";
+    /** 饰品栏里那顶帽子的护甲（Curios 不结算 ArmorItem 的属性，这里自己补一条）。 */
+    private static final UUID CURIO_ARMOR_ID = UUID.fromString("b3f0c2a8-57d1-4e6b-9a44-1c8d2f6e7a90");
+    private static final String CURIO_ARMOR_NAME = "hatmod_curio_hat_armor";
     /** 白帽永久跳跃的最高等级：放大 1 = 跳跃 II，「疾行」再高也不往上加。 */
     private static final int MAX_PERMANENT_JUMP_AMPLIFIER = 1;
 
@@ -226,18 +240,6 @@ public final class HatAbilities {
     private static final float MAX_BEAM_POWER = 4.0F;
 
     private static final Map<UUID, HatState> STATES = new HashMap<>();
-
-    /**
-     * 戴帽者 ->（目标 -> 本轮已经造成的百分比伤害点数）。
-     *
-     * <p>光柱的「百分比伤害」每轮循环对**同一个敌人**最多打掉其最大生命的
-     * {@link #PERCENT_DAMAGE_PER_CYCLE}；打满之后就只剩固定伤害在打，目标走正常的死亡流程。
-     * 每轮循环开始（{@link #startCharge}）时清空。
-     */
-    private static final Map<UUID, Map<UUID, Float>> PERCENT_BUDGET = new HashMap<>();
-
-    /** 每轮循环对同一个敌人的百分比伤害上限（占最大生命的比例）。 */
-    private static final float PERCENT_DAMAGE_PER_CYCLE = 0.10F;
 
     private HatAbilities() {
     }
@@ -260,6 +262,9 @@ public final class HatAbilities {
     /**
      * 这只生物身上正在生效的那顶帽子：先看头盔槽，再看 Curios 饰品栏。
      *
+     * <p>头顶那顶优先：头上已经戴着一顶帽子时，生效的就是头上那顶 —— 饰品栏里再放一顶
+     * 只贡献它自己的护甲值（Curios 结算那条属性），不会顶掉头上的效果。
+     *
      * <p>两个地方都按原样返回（空栈表示没戴），调用方照旧用 {@link HatItems#typeOf} 判断。
      * 饰品栏那条只在装了 Curios 时才会走到；没装时 {@link CuriosCompat} 这个类
      * 根本不会被加载，所以 Curios 不在也不会报 {@code NoClassDefFoundError}。
@@ -275,6 +280,7 @@ public final class HatAbilities {
     public static boolean isWearingHat(LivingEntity entity) {
         return HatItems.isHat(hatStack(entity));
     }
+
 
     /**
      * 被光柱强控的生物一点伤害都打不出来（{@link #HELD}）。
@@ -372,7 +378,7 @@ public final class HatAbilities {
      * 「脑蚀」的声波：一次结算，按住 {@code ticks} 刻。
      *
      * <p>和光柱同一套强控（缓慢 255 + 虚弱 255 + 挖掘疲劳 255 + 强制 {@code NoAI}），
-     * 区别只在不需要每刻续 —— 声波只发生一瞬，所以一次性挂满整段（20 秒）。
+     * 区别只在不需要每刻续 —— 声波只发生一瞬，所以一次性挂满整段（40 秒）。
      */
     static void applySonicHold(ServerLevel level, LivingEntity living, int ticks) {
         // 声波只结算一瞬，没有下一次续期：效果时长就是整段定身时间，缓慢直接给 255
@@ -385,7 +391,7 @@ public final class HatAbilities {
     /**
      * 解除到期的强控并恢复 AI。
      *
-     * <p>按「到期刻」判定（光柱每刻续 2 刻，声波一次挂 20 秒），而不是在光柱结束时逐个通知：
+     * <p>按「到期刻」判定（光柱每刻续 2 刻，声波一次挂 40 秒），而不是在光柱结束时逐个通知：
      * 施法者死亡、摘帽、掉线、走远等情况都能自动收尾，不会留下一只永久 noAI 的怪。
      */
     private static void releaseStaleHolds(int now) {
@@ -656,6 +662,16 @@ public final class HatAbilities {
         releaseStaleDominion(event.getServer(), now);
         // 力场关掉重力的弹射物要是已经没了（打中/超时），就从登记里摘掉，免得越攒越多
         GRAVITY_HELD.values().removeIf(Entity::isRemoved);
+        // 破防判定：每秒一次，哪顶帽子打的都算 —— 和帽子种类、循环节奏全都无关
+        if (now % 20 == 0) {
+            evaluateForceCycle(event.getServer());
+        }
+        // 破防接管：放在 tick 末尾，把这一 tick 里对方回的血 / 写的满血 / 同步的镜像覆盖掉
+        tickSealedHealth(event.getServer());
+        // 硬杀过的目标要是被自己的复活逻辑塞回来了，接着摘
+        tickPurged(event.getServer());
+        // 破防模式下被外人删掉的虚影 / 铁托，拉回来
+        reviveSummons(event.getServer());
     }
 
     // ------------------------------------------------------------------
@@ -679,7 +695,68 @@ public final class HatAbilities {
         }
         tickAuras(player, player.serverLevel());
         tick(player, player.serverLevel());
+        if (HatSettings.forceBreak() && !hatStack(player).isEmpty()) {
+            lockPlayerHealth(player);
+        }
     }
+    /** 玩家身上最后的血量：破防模式下被绕过伤害系统写低时，用这个值抬回去。 */
+    private static final Map<UUID, Float> PLAYER_HEALTH = new HashMap<>();
+
+    /**
+     * 破防模式下给玩家的「Teto 级防御」第二层：血量锁。
+     *
+     * <p>第一层（伤害事件取消）挡的是正常伤害；这一层挡的是绕过伤害系统直接
+     * {@code setHealth(0)} 的那类杀法（Witheria 的死亡程序、永爱之刃的 killEntity）。
+     */
+    private static void lockPlayerHealth(ServerPlayer player) {
+        float health = player.getHealth();
+        Float remembered = PLAYER_HEALTH.get(player.getUUID());
+        if (remembered == null) {
+            PLAYER_HEALTH.put(player.getUUID(), health);
+            return;
+        }
+        if (health < remembered - 0.01F) {
+            player.setHealth(Math.max(remembered, health));
+        } else {
+            PLAYER_HEALTH.put(player.getUUID(), health);
+        }
+    }
+
+    /**
+     * 破防模式下给玩家的「Teto 级防御」第三层：死亡拦截。
+     *
+     * <p>前两层都被绕过去（比如 {@code /kill} 走完整死亡流程）时，这里直接把死亡事件取消，
+     * 让 {@code die()} 根本不执行。
+     */
+    @SubscribeEvent
+    public static void onLivingDeath(LivingDeathEvent event) {
+        if (!HatSettings.forceBreak()) {
+            return;
+        }
+        // 破防模式：死了就别想回来。记进「已杀」名册，被它的主人/召唤者拉起来就跟进摘掉
+        // （见 tickPurged）。这条对召唤物尤其重要 —— 它们往往死了会被 Boss 当场复活。
+        LivingEntity dead = event.getEntity();
+        if (dead instanceof Teto) {
+            HatMod.LOGGER.warn("[hatmod] Teto 触发了死亡事件（血量 {}/{}）—— 之后它会被记进清算名册，"
+                            + "每 5 刻被摘一次，链路就会不停「补回来」",
+                    dead.getHealth(), dead.getMaxHealth());
+        }
+        if (!(dead instanceof Player) && !isUntouchable(dead)) {
+            if (PURGED.size() > 256) {
+                PURGED.clear();
+            }
+            PURGED.computeIfAbsent(dead.getUUID(), key -> new Purge());
+        }
+        if (!(event.getEntity() instanceof Player player) || hatStack(player).isEmpty()) {
+            return;
+        }
+        event.setCanceled(true);
+        player.setHealth(player.getMaxHealth());
+        player.invulnerableTime = 20;
+        PLAYER_HEALTH.put(player.getUUID(), player.getMaxHealth());
+        HatMod.LOGGER.info("[hatmod] 破防模式拦下了 {} 的死亡", player.getName().getString());
+    }
+
 
     @SubscribeEvent
     public static void onLivingTick(LivingEvent.LivingTickEvent event) {
@@ -695,7 +772,8 @@ public final class HatAbilities {
     }
 
     private static void tick(LivingEntity wearer, ServerLevel level) {
-        // 「虚影」不参与状态机：它不戴帽子、不放光柱，只负责绕圈、嘲讽和替挡
+        // 「虚影」不参与状态机：它虽然戴着帽子（HatSummon.init 给的「全」），但这里的蓄力/
+        // 照射/召唤一律不跑 —— 它只负责绕圈、嘲讽、替挡和它自己那道小光柱
         if (wearer instanceof HatSummon) {
             return;
         }
@@ -715,10 +793,11 @@ public final class HatAbilities {
                 HatMusic.stop(level, wearer, state.route);
                 clearBeamSync(wearer, state);
                 STATES.remove(id);
-                PERCENT_BUDGET.remove(id);
                 STEP_NANOS.remove(id);
                 STEP_CARRY.remove(id);
             }
+            // 帽子没戴 / 戴的是脑蚀帽：饰品栏里那顶的护甲照给（和头上是什么无关）
+            applyCurioArmor(wearer);
             return;
         }
 
@@ -745,7 +824,9 @@ public final class HatAbilities {
         // 白帽：戴着就一直有迅捷 I + 跳跃 I
         applyPermanentBuffs(wearer, type);
         // 帽子上每多一个附魔，护甲 +2
-        applyEnchantArmor(wearer, hatStack(wearer));
+        ItemStack activeHat = hatStack(wearer);
+        applyEnchantArmor(wearer, activeHat);
+        applyCurioArmor(wearer);
 
         // ---- 这一轮的时长也是照着 BGM 排的（蓄力 = 前奏、照射 = 副歌）----
         // 和「脑蚀」那条链路同一个问题：服务器掉 TPS 时游戏刻慢于真实时间，而音乐是按
@@ -891,8 +972,8 @@ public final class HatAbilities {
             HatAchievements.noteRoute(wearer, state.route);
         }
         state.dominionFired = false;
-        // 新一轮循环：百分比伤害的「每轮上限」重新开始记
-        PERCENT_BUDGET.remove(wearer.getUUID());
+        // 新一轮：上一轮的实际伤害账清掉（破防判定每秒做一次，见 onServerTick）
+        resetCycleDamage();
         HatMusic.play(level, wearer, state.route);
         // 路线换了一条：把新颜色告诉客户端（帽子会跟着变那个颜色，见 getArmorTexture）
         HatNetwork.sendRoute(wearer, HatItems.typeOf(hat), state.route);
@@ -926,11 +1007,6 @@ public final class HatAbilities {
             // 「不动如山」：红帽蓄力全程一次没被打中，光柱照常放出来了
             if (state.type == HatType.RED && !state.hitWhileCharging) {
                 HatAchievements.grant(wearer, HatAchievements.IMMOVABLE);
-            }
-            // 「全」帽专属：蓄力完成的那一刻放出 4 个虚影，绕最近的敌人转圈并嘲讽。
-            // 寿命 = 主人这一轮的照射时长（路线不同则长短不同）。
-            if (state.type == HatType.ALL) {
-                HatSummons.summonAll(level, wearer, state.flash);
             }
             // 附魔「预知」：蓄力完成的那一刻释放，30 格内的敌人当场定住 —— 时长按等级取
             // 「本轮循环剩余长度」的 1/3、2/3、3/3（III 级打满，最大值不变）
@@ -1010,6 +1086,10 @@ public final class HatAbilities {
             }
             // 光灵标记：原版光灵箭给受害者挂的就是这个效果。时长跟索敌时长一致。
             target.addEffect(new MobEffectInstance(MobEffects.GLOWING, ticks, 0, false, false, true));
+            // 「掌控」的另一半：被控住的家伙**破绽全开**（受伤 +50%，见 HatProtection）。
+            // 对星之魔女这种「施法目标根本不走 Mob#target、改目标等于空转」的 Boss，
+            // 这是唯一还吃得上的部分。
+            target.addEffect(new MobEffectInstance(HatEffects.VULNERABLE.get(), ticks, 0, false, false, true));
             level.playSound(null, target.getX(), target.getY(), target.getZ(),
                     SoundEvents.ENDER_EYE_LAUNCH, SoundSource.PLAYERS, 1.0F, 0.7F);
         }
@@ -1154,17 +1234,24 @@ public final class HatAbilities {
      */
     @SubscribeEvent
     public static void onLivingChangeTarget(LivingChangeTargetEvent event) {
-        LivingEntity entity = event.getEntity();
-        LivingEntity newTarget = event.getNewTarget();
+        // 这个事件每个生物索敌时都要过一遍，而且 Forge 的 EventBus 在「监听器抛异常」
+        // 时的报错路径本身会踩到 log4j 的 LinkageError，直接把服务器线程打死 ——
+        // 所以这里自己兜住，绝不往外抛。
+        try {
+            LivingEntity entity = event.getEntity();
+            LivingEntity newTarget = event.getNewTarget();
 
-        // ① 挂着「神隐」的目标：谁都别想锁上（原版隐身已经能骗过大部分生物，这里补上剩下的）
-        if (newTarget != null && newTarget.hasEffect(HatEffects.VEIL.get())) {
-            blockTargeting(event);
-            return;
-        }
-        // ② 被「掌控」剥夺索敌的生物：只放行我们指给它的那个对手，其余一律拦下
-        if (isDominionLocked(entity) && !isDominionVictim(entity, newTarget)) {
-            blockTargeting(event);
+            // ① 挂着「神隐」的目标：谁都别想锁上（原版隐身已经能骗过大部分生物，这里补上剩下的）
+            if (newTarget != null && newTarget.hasEffect(HatEffects.VEIL.get())) {
+                blockTargeting(event);
+                return;
+            }
+            // ② 被「掌控」剥夺索敌的生物：只放行我们指给它的那个对手，其余一律拦下
+            if (isDominionLocked(entity) && !isDominionVictim(entity, newTarget)) {
+                blockTargeting(event);
+            }
+        } catch (Throwable ignored) {
+            // 索敌拦截失效远好过崩服
         }
     }
 
@@ -1213,10 +1300,11 @@ public final class HatAbilities {
             blindLockedWarden(warden);
         }
         LivingEntity current = mob.getTarget();
-        if (current != null && current.isAlive()) {
-            return; // 已经在打了
+        // 已经在打别的敌人了：不打扰（免得每刻改来改去，原地转圈）
+        if (current != null && current.isAlive() && !(current instanceof Player)) {
+            return;
         }
-        LivingEntity victim = findDominionVictim(mob);
+        LivingEntity victim = currentVictim(mob);
         if (victim == null) {
             return; // 身边没有别的敌人：那就照旧发呆，等解禁
         }
@@ -1224,9 +1312,79 @@ public final class HatAbilities {
         if (mob instanceof Warden warden) {
             // 监守者的目标是 Brain 记忆，只有它自己的 setAttackTarget 写得进去
             warden.setAttackTarget(victim);
-        } else {
-            mob.setTarget(victim);
+            return;
         }
+        // 有的生物（星之魔女这种 Boss）重写了 setTarget：只要它还看得见挑战者，
+        // 就会把传进去的目标换成玩家。先走正规路径，没生效再直接写字段。
+        mob.setTarget(victim);
+        if (mob.getTarget() != victim) {
+            writeTargetField(mob, victim);
+        }
+    }
+
+    /** 上次指给它的对手还活着就继续用，死了 / 没了就重新挑一个。 */
+    @Nullable
+    private static LivingEntity currentVictim(Mob mob) {
+        UUID assigned = DOMINION_VICTIM.get(mob.getUUID());
+        if (assigned != null) {
+            for (Entity entity : mob.level().getEntities(mob, mob.getBoundingBox().inflate(DOMINION_FIGHT_RADIUS * 2.0D))) {
+                if (entity instanceof LivingEntity living && living.isAlive()
+                        && living.getUUID().equals(assigned)) {
+                    return living;
+                }
+            }
+        }
+        return findDominionVictim(mob);
+    }
+
+    /** {@code Mob#target} 字段：只按**类型**找，不认名字（线上 1.20.1 是 SRG 的 {@code f_21344_}）。 */
+    @Nullable
+    private static Field TARGET_FIELD;
+    private static boolean TARGET_FIELD_READY;
+
+    /**
+     * 把目标直接写进 {@code Mob#target}，绕开被重写的 {@code setTarget}。
+     *
+     * <p>反射拿字段：先看 {@link Mob} 里类型为 {@link LivingEntity} 的字段，且必须**只有一条** ——
+     * 多于一条就不猜了（宁可不改，也不能写错字段）。找不到就什么都不做，行为退化成原来的样子。
+     */
+    private static void writeTargetField(Mob mob, LivingEntity victim) {
+        Field field = targetField();
+        if (field == null) {
+            return;
+        }
+        try {
+            field.set(mob, victim);
+        } catch (Throwable ignored) {
+            // 反射被安全策略挡住也无所谓：这一下只是「让 Boss 转火」的加强，不能因此崩服
+        }
+    }
+
+    @Nullable
+    private static Field targetField() {
+        if (TARGET_FIELD_READY) {
+            return TARGET_FIELD;
+        }
+        TARGET_FIELD_READY = true;
+        Field found = null;
+        for (Field field : Mob.class.getDeclaredFields()) {
+            if (field.getType() != LivingEntity.class || java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                continue;
+            }
+            if (found != null) {
+                return null; // 不止一条，不猜
+            }
+            found = field;
+        }
+        if (found != null) {
+            try {
+                found.setAccessible(true);
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+        TARGET_FIELD = found;
+        return TARGET_FIELD;
     }
 
     /** 内讧的对手：周围最近的另一个**敌意生物**（不含自己、不含玩家和己方）。 */
@@ -1263,6 +1421,7 @@ public final class HatAbilities {
         ItemStack hat = hatStack(wearer);
         int beamCount = BASE_BEAM_COUNT + HatEnchants.conflagrationExtraBeams(hat);
         List<LivingEntity> targets = beamTargets(wearer, beamCount);
+        logBeamLock(wearer, targets);
 
         // 光柱本体由客户端用几何体绘制。同步走本模组自己的包，**不用状态效果**：
         // 1.20.1 的原版只把生物的状态效果同步给乘客，只有玩家会额外发给自己，
@@ -1306,6 +1465,11 @@ public final class HatAbilities {
             state.flashBlinks = 0;
             // 本轮循环到此结束：迅捷收掉（下一轮蓄力开始时会再给一次）
             clearCycleSpeed(wearer);
+            // 「全」帽专属：**照射结束的那一刻**才放出 4 个虚影 —— 光柱收了，影子留下来
+            // 再缠 10 秒（绕最近的敌人转圈并嘲讽）。
+            if (state.type == HatType.ALL) {
+                HatSummons.summonAll(level, wearer, HatSummons.SHADE_LIFE_TICKS, state.route);
+            }
             // 照完之后重新进入循环：附近还有敌人就再次蓄力（并从循环开始处再放一次音乐）
             if (findNearestEnemy(wearer) != null) {
                 startCharge(wearer, level, state);
@@ -1329,22 +1493,39 @@ public final class HatAbilities {
      * 单道光柱的伤害倍率：基础 2 道把原来 1 道的伤害劈成两半，每道 ×0.5，
      * 两道合计与改动前的一道光柱相同。
      *
-     * <p>附魔「光柱」多出来的道也按这个倍率结算（它们同样是「一道光柱」），
-     * 再另行叠加 {@link #BEAM_STACK_FACTOR} 的边际递减。
+     * <p>附魔「光柱」多出来的道也按这个倍率结算。**多道叠在同一个目标上不再打折**
+     * （原来的边际递减已移除）—— 敌人不够时多余的几道全砸在同一个 Boss 上，
+     * 每一道都是完整的伤害。
      */
     public static final float BEAM_DAMAGE_SCALE = 0.5F;
 
     /**
-     * 多道光柱堆叠在同一目标上的**边际递减**系数：同一目标上第 m 道（从 0 数）乘
-     * {@code BEAM_STACK_FACTOR^m}。
+     * 一次光柱结算拆成几次 {@code hurt()}。
      *
-     * <p>只作用于**附魔「光柱」加出来的**那些道 —— 基础 {@link #BASE_BEAM_COUNT} 道
-     * 叠在同一个人身上不打折。敌人少于光柱数时（比如单挑一个 Boss），多余的附魔光柱会落回
-     * 已有目标而不是白白浪费，但每多叠一道就打个折：三道光柱全堆一个人是
-     * 1 + 0.4 + 0.16 = 1.56 倍（相对一道附魔光柱），而不是 3 倍。
-     * 调大它红帽单挑更强，调小则更接近「一人一道」。
+     * <p>不少 Boss（下界亚伯伦、Witheria、星之魔女……）在 {@code hurt()} 里做了「每击上限」：
+     * 一次打 100 点和打 10 点掉的血一样多。这个上限是按**单次 hurt** 结算的，所以把同一份伤害
+     * 拆成几段、每段都在上限之下，总伤害就上去了 —— 不改对方代码的前提下，这是最稳的破防手段。
      */
-    private static final float BEAM_STACK_FACTOR = 0.4F;
+    public static final int PIERCE_SPLIT = 4;
+
+    // ------------------------------------------------------------------
+    // 「破防」：一轮打不到最大生命的一半，就改成按帽子伤害强写血量
+    //
+    // 判据全部来自 {@link net.minecraft.world.entity.LivingEntity#getHealth} 的差值 ——
+    // 不猜对方减免了多少，而是量出「我们该打多少」和「实际掉了多少」的差。
+    // ------------------------------------------------------------------
+
+    /** 一轮（蓄力 + 照射）里每个目标：[0] 实际掉的血，[1] 帽子**应该**打出的伤害。 */
+    private static final Map<UUID, float[]> CYCLE_DAMAGE = new HashMap<>();
+    /** 下一轮要「破防」的目标：不再走常规减伤，直接按帽子该给的伤害写血。 */
+    private static final Set<UUID> FORCE_TARGETS = new HashSet<>();
+    /**
+     * 破防判定线：**实际掉血 / 应该造成的伤害** 低于这个比例，才算「伤害被防御吃掉了」。
+     *
+     * <p>刻意不用「最大生命的百分比」当分母 —— 那样血牛（血极厚但没有减伤）会被误判：
+     * 它一轮掉的血本来就不可能到最大生命的一半，可它一点伤害都没吃。
+     */
+    private static final float FORCE_THRESHOLD = 0.5F;
 
     /**
      * 这次照射每道光柱各自锁谁：由近到远取敌人，**敌人不够时多余的光柱堆叠到已有目标上**。
@@ -1352,12 +1533,41 @@ public final class HatAbilities {
      * <p>返回列表的长度恒为 {@code beamCount}（有敌人时），下标 i 就是「第 i 道光柱」：
      * 目标取 {@code enemies[i % n]}，堆叠轮次 {@code i / n}。于是敌人够多时一人一道。
      *
-     * <p>注意区分两种道：下标小于 {@link #BASE_BEAM_COUNT} 的是**基础光柱**，堆叠时不衰减；
-     * 之后的是附魔「光柱」加出来的，堆叠时按 {@link #BEAM_STACK_FACTOR} 递减
-     * （扣血倍率在 {@link #damageBeam} 里算）。
+     * <p>堆叠不打折：同一个目标被几道光同时锁定就吃几份满伤（扣血倍率在
+     * {@link #damageBeam} 里算）。
      * 一个敌人都没有时返回空列表（客户端仍会沿视线画出 {@link #BASE_BEAM_COUNT} 道，
      * 见 {@link #tickingFlash}）。
      */
+    /** 上一次打过的光柱锁定组合（组合变了才打日志，免得每刻刷屏）。 */
+    private static final Map<UUID, String> BEAM_LOCK_SIG = new HashMap<>();
+
+    /**
+     * 记一条「光柱现在锁着谁」。
+     *
+     * <p>只在破防模式下打，而且同一种组合只打一次 —— 用来回答「光束为什么打不死它」：
+     * 是没锁上、还是锁到了别的实体（Witheria 的激光 / 炮塔 / 爆炸云就吃过这个亏）。
+     */
+    private static void logBeamLock(LivingEntity wearer, List<LivingEntity> targets) {
+        if (!HatSettings.forceBreak()) {
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (LivingEntity target : targets) {
+            if (sb.length() > 0) {
+                sb.append("，");
+            }
+            sb.append(target.getType()).append('(')
+                    .append(Math.round(wearer.distanceTo(target))).append("格)");
+        }
+        String signature = sb.toString();
+        if (signature.equals(BEAM_LOCK_SIG.get(wearer.getUUID()))) {
+            return;
+        }
+        BEAM_LOCK_SIG.put(wearer.getUUID(), signature);
+        HatMod.LOGGER.warn("[hatmod] 光柱锁定：{}",
+                signature.isEmpty() ? "射程内没有合法敌人" : signature);
+    }
+
     private static List<LivingEntity> beamTargets(LivingEntity wearer, int beamCount) {
         List<LivingEntity> enemies = findNearestEnemies(wearer, beamCount);
         if (enemies.isEmpty() || enemies.size() >= beamCount) {
@@ -1368,24 +1578,6 @@ public final class HatAbilities {
             beams.add(enemies.get(i % enemies.size()));
         }
         return beams;
-    }
-
-    /** 列表里有几个不同的目标（堆叠时同一目标会出现多次）。按身份比较，列表很短不值得上 Set。 */
-    private static int distinctTargets(List<LivingEntity> targets) {
-        List<LivingEntity> seen = new ArrayList<>(targets.size());
-        for (LivingEntity target : targets) {
-            boolean duplicate = false;
-            for (LivingEntity previous : seen) {
-                if (previous == target) {
-                    duplicate = true;
-                    break;
-                }
-            }
-            if (!duplicate) {
-                seen.add(target);
-            }
-        }
-        return seen.size();
     }
 
     /**
@@ -1534,6 +1726,39 @@ public final class HatAbilities {
         }
     }
 
+    /**
+     * 「完整版神隐」：整段效果期间都保证清仇恨。
+     *
+     * <p>普通神隐是削过的 —— 只保刚挂上的前 3 秒，之后就是普通隐身。这里给脑蚀链路用，
+     * 效果挂多久就清多久仇恨，一直持续到第一次「Nope, too late」。
+     */
+    public static void grantFullVeil(LivingEntity living, int ticks) {
+        if (ticks <= 0) {
+            return;
+        }
+        living.addEffect(new MobEffectInstance(HatEffects.VEIL.get(), ticks, 0, false, false, true));
+        VEIL_AGGRO_FREE_UNTIL.put(living.getUUID(), living.level().getGameTime() + ticks);
+        // 立刻甩一次，别等下一 tick
+        tickVeil(living);
+    }
+
+    // ------------------------------------------------------------------
+    // 发光标记
+    // ------------------------------------------------------------------
+
+    /**
+     * 给目标挂上发光（原版轮廓色，白色）：被音波定死的敌人一直亮着，好找。
+     *
+     * <p>以前为了让轮廓变黑，把它临时塞进一支黑色队伍（原版轮廓色取自队伍颜色），
+     * 但那会把别人模组的队伍关系一起改掉，代价太大 —— 现在就是普通发光。
+     */
+    public static void markGlow(LivingEntity target, int ticks) {
+        if (ticks <= 0) {
+            return;
+        }
+        target.addEffect(new MobEffectInstance(MobEffects.GLOWING, ticks + 5, 0, false, false, false));
+    }
+
     /** 还没有神隐、或者快到期了才补一次；已经有了且时间还早就不动它。 */
     private static void applyVeil(LivingEntity living, int ticks) {
         MobEffectInstance current = living.getEffect(HatEffects.VEIL.get());
@@ -1556,6 +1781,94 @@ public final class HatAbilities {
         MobEffectInstance jump = wearer.getEffect(MobEffects.JUMP);
         if (jump != null && jump.isInfiniteDuration()) {
             wearer.removeEffect(MobEffects.JUMP);
+        }
+    }
+
+
+    /**
+     * 饰品栏里那顶帽子的护甲值。
+     *
+     * <p>Curios 的 head 槽**不会**替物品结算 {@code ArmorItem} 自带的那条护甲属性
+     * （它只认 {@code ICurioItem#getAttributeModifiers}，本模组的帽子没实现），所以帽子放进
+     * 饰品栏之后一直「只有效果、没有护甲」。这里按 {@link HatItems#HAT_ARMOR} 补一条瞬态修饰符。
+     *
+     * <p>和头盔槽那顶**互不影响**：头盔槽那份是 {@code ArmorItem} 自己的原版装备加成，
+     * 这里补的是饰品栏那顶。两顶同时在，护甲是两个 2 相加。
+     *
+     * <p>直接读饰品栏，不看 {@code hatStack()} —— 以前从「当前生效的帽子」推，
+     * 脑蚀帽（{@code typeOf} 返回 null）戴在头上时会走进摘帽分支把这份一起清掉。
+     */
+    private static void applyCurioArmor(LivingEntity wearer) {
+        AttributeInstance armor = wearer.getAttribute(Attributes.ARMOR);
+        if (armor == null) {
+            return;
+        }
+        ItemStack curioHat = curiosLoaded() ? CuriosCompat.findHat(wearer) : ItemStack.EMPTY;
+        boolean hasCurioHat = HatItems.isHat(curioHat);
+        AttributeModifier existing = armor.getModifier(CURIO_ARMOR_ID);
+        if (!hasCurioHat) {
+            if (existing != null) {
+                armor.removeModifier(CURIO_ARMOR_ID);
+                logArmorBreakdown(wearer, false, 0.0D);
+            }
+            return;
+        }
+        // 基础护甲 + 这顶自己的附魔。头上没戴帽子时它的附魔已经由 applyEnchantArmor 算过，
+        // 这里就不重复加。
+        boolean headIsHat = HatItems.isHat(wearer.getItemBySlot(EquipmentSlot.HEAD));
+        double wanted = HatItems.HAT_ARMOR;
+        if (headIsHat) {
+            wanted += EnchantmentHelper.getEnchantments(curioHat).size() * ARMOR_PER_ENCHANT;
+        }
+        if (existing != null && existing.getAmount() == wanted) {
+            return;
+        }
+        if (existing != null) {
+            armor.removeModifier(CURIO_ARMOR_ID);
+        }
+        armor.addTransientModifier(new AttributeModifier(
+                CURIO_ARMOR_ID, CURIO_ARMOR_NAME, wanted, AttributeModifier.Operation.ADDITION));
+        logArmorBreakdown(wearer, true, wanted);
+    }
+
+    /** 上一次打过的护甲构成（同一种构成只打一次）。 */
+    private static final Map<UUID, String> ARMOR_BREAKDOWN = new HashMap<>();
+
+    /**
+     * 记一条护甲构成：装备给的、附魔给的、饰品栏给的分别是多少。
+     *
+     * <p>只在构成变化时打一行 —— 用来回答「为什么饰品栏那顶帽子没加护甲」。
+     */
+    private static void logArmorBreakdown(LivingEntity wearer, boolean hasCurioHat, double curioBonus) {
+        AttributeInstance armor = wearer.getAttribute(Attributes.ARMOR);
+        if (armor == null) {
+            return;
+        }
+        double total = armor.getValue();
+        double enchanted = 0.0D;
+        AttributeModifier enchant = armor.getModifier(ENCHANT_ARMOR_ID);
+        if (enchant != null) {
+            enchanted = enchant.getAmount();
+        }
+        double equipped = total - enchanted - curioBonus;
+        String signature = String.format("total=%.1f equipped=%.1f enchant=%.1f curio=%s%.1f",
+                total, equipped, enchanted, hasCurioHat ? "+" : "", hasCurioHat ? curioBonus : 0.0D);
+        if (signature.equals(ARMOR_BREAKDOWN.get(wearer.getUUID()))) {
+            return;
+        }
+        ARMOR_BREAKDOWN.put(wearer.getUUID(), signature);
+        HatMod.LOGGER.info("[hatmod] {} 的护甲：{}（装备 {} / 附魔 {} / 饰品栏 {}）",
+                wearer.getName().getString(),
+                String.format("%.1f", total), String.format("%.1f", equipped),
+                String.format("%.1f", enchanted),
+                hasCurioHat ? String.format("%.1f", curioBonus) : "无");
+    }
+
+    /** 饰品栏里的帽子被拿走时把那条护甲收掉。 */
+    private static void clearCurioArmor(LivingEntity wearer) {
+        AttributeInstance armor = wearer.getAttribute(Attributes.ARMOR);
+        if (armor != null && armor.getModifier(CURIO_ARMOR_ID) != null) {
+            armor.removeModifier(CURIO_ARMOR_ID);
         }
     }
 
@@ -1776,6 +2089,17 @@ public final class HatAbilities {
             return;
         }
 
+        // 破防记账：光柱之外打出去的伤害（近战、召唤物……）也要记成「这一秒打到了它」。
+        // 只靠光柱记账的话，近战打出来的伤害在账本里一条都没有（见 evaluateForceCycle）。
+        noteHitByHat(entity, event.getSource().getEntity());
+
+        // 破防模式 + 戴着帽子（牛仔帽 / TETO 帽同一套）：玩家完全免伤
+        if (HatSettings.forceBreak() && entity instanceof Player player && !hatStack(player).isEmpty()) {
+            event.setCanceled(true);
+            PLAYER_HEALTH.put(player.getUUID(), player.getHealth());
+            return;
+        }
+
         // 「谁打过我」记一笔（见 rememberAggressor）：记下来之后它就会进光柱的攻击名单。
         // 放在最前面 —— 哪怕这一下后面被绿心吃掉、或者被黑帽的闪避躲开，账都照记。
         rememberAggressor(entity, event.getSource(), event.getAmount());
@@ -1786,7 +2110,8 @@ public final class HatAbilities {
         Entity attacker = event.getSource().getEntity();
         if (attacker instanceof LivingEntity livingAttacker
                 && (isAttackLocked(livingAttacker)
-                        || (isWearingHat(livingAttacker) && HatProtection.isProtected(entity)))) {
+                        || (isWearingHat(livingAttacker)
+                                && HatProtection.isProtected(entity, livingAttacker)))) {
             event.setCanceled(true);
             return;
         }
@@ -1880,7 +2205,7 @@ public final class HatAbilities {
         shade.moveTo(from.x, from.y, from.z, shade.getYRot(), shade.getXRot());
         shade.resetFallDistance();
         shade.setDeltaMovement(Vec3.ZERO);
-        // 这一击由虚影吃下（二十点血，大多数攻击直接把它打散）
+        // 这一击由虚影吃下（单次最多掉 20% 血，还会把伤害反回去 —— 见 HatSummon#hurt）
         shade.hurt(source, amount);
         // 换位轨迹拖一串墨色粒子，看得出是「和影子对调了」
         double deltaX = from.x - to.x;
@@ -2109,7 +2434,23 @@ public final class HatAbilities {
         }
         nearby.sort((a, b) -> Double.compare(wearer.distanceToSqr(a), wearer.distanceToSqr(b)));
         found.addAll(nearby);
-        return found.size() <= count ? found : new ArrayList<>(found.subList(0, count));
+        // ③ 敌意生物优先。脑蚀链路跑起来时，isEnemy 的 brainrotLockAll 会把 40 格内
+        //    **一切非友方单位**都算成敌人 —— 于是 Witheria 那些特效实体（垂直激光
+        //    VerticalLaserEntity extends PathfinderMob、炮塔、爆炸云……）会跟本体抢
+        //    光柱的 4 个名额。它们离得更近、数量又多，结果 4 道光全砸在激光上，
+        //    本体一发都没挨。Enemy（Monster 一类）才是真正要打的东西，排前面。
+        List<LivingEntity> ordered = new ArrayList<>(found.size());
+        for (LivingEntity living : found) {
+            if (living instanceof Enemy) {
+                ordered.add(living);
+            }
+        }
+        for (LivingEntity living : found) {
+            if (!(living instanceof Enemy)) {
+                ordered.add(living);
+            }
+        }
+        return ordered.size() <= count ? ordered : new ArrayList<>(ordered.subList(0, count));
     }
 
     /**
@@ -2117,12 +2458,24 @@ public final class HatAbilities {
      * 最近真的打过戴帽者的生物（见 {@link #rememberAggressor}）。
      * 不含玩家和己方（避免误伤队友、宠物、自己的女仆）。
      */
+    /** 脑蚀强制锁敌的半径（格）：链路的照射范围是 40，锁敌同一圈。 */
+    private static final double BRAINROT_LOCK_RANGE = 40.0D;
+
     public static boolean isEnemy(Entity entity, LivingEntity wearer) {
-        if (entity == wearer || entity instanceof Player) {
+        if (entity == wearer) {
             return false;
+        }
+        if (entity instanceof Player) {
+            // 锁敌模式下玩家也可以成为目标（是否真的造成伤害由 affectPlayers 另外管）
+            return HatSettings.lockPlayers() && !isFriendlyTo(wearer, entity);
         }
         if (isFriendlyTo(wearer, entity)) {
             return false;
+        }
+        // 脑蚀强制锁敌：P 触发的链路在跑的时候，范围内的非友方单位一律算敌人
+        if (HatSettings.brainrotLockAll() && BrainrotCycle.isRunning(wearer)
+                && wearer.distanceToSqr(entity) <= BRAINROT_LOCK_RANGE * BRAINROT_LOCK_RANGE) {
+            return true;
         }
         // 兜底：真的打过我的，一律算敌人 —— 放在类型判断前面，所以「被动生物但会打人」
         // 这类魔改生物也进得来（它本来连 Mob 的敌意判断都过不了）。
@@ -2465,21 +2818,2337 @@ public final class HatAbilities {
         // 伤害类型 / 附加百分比等仍按帽子自己的配置走（「全」用的是「全」那份）
         DamageSource source = HatSettings.damageSource(level, wearer, hatType);
 
-        // 每道光柱沿自己的方向结算一遍。所有帽子天生 2 道：这两道叠在同一目标上**不打折**；
-        // 红帽附魔「光柱」多出来的道，敌人够多就一人一道，敌人不够时堆叠到已有目标上，
-        // 按 BEAM_STACK_FACTOR 边际递减。每道伤害再乘 BEAM_DAMAGE_SCALE（基础两道合计 = 原来一道）。
+        // 每道光柱各打自己锁定的那个目标，**每一道都是满伤**：
+        // 敌人够多就一人一道；敌人不够时多出来的道全堆到已有目标上，也不打折。
+        // 每道伤害乘 BEAM_DAMAGE_SCALE（基础两道合计 = 原来一道）。
         // 没有目标时不结算（客户端仍会沿视线画出这几道，见 tickingFlash）。
-        int distinct = distinctTargets(targets);
         for (int i = 0; i < targets.size(); i++) {
             float factor = power * BEAM_DAMAGE_SCALE;
-            if (i >= BASE_BEAM_COUNT && distinct > 0) {
-                // 同一目标上第 m 道「附魔光柱」才打折；基础那几道永远满伤
-                int enchantStack = (i - BASE_BEAM_COUNT) / distinct;
-                factor *= (float) Math.pow(BEAM_STACK_FACTOR, enchantStack);
-            }
             float drained = damageOneBeam(level, wearer, hatType, source, flatDamage * factor, factor, targets.get(i));
             applyLifesteal(wearer, hat, drained);
         }
+    }
+
+    /**
+     * 分身光柱的一刻结算：**和正主同一套伤害**，只是不控人。
+     *
+     * <p>固定帧伤照 {@code state.route} 取（{@code HatSettings.routeDamage}，和正主同一个旋钮），
+     * 百分比伤害照 {@code HatType.ALL} 取（正主也是这么取的：帧伤跟路线、百分比跟帽子本身）。
+     * 打之前把目标的动量存下来、打完还原，{@code hurt()} 自带的击退就不留了。
+     */
+    static void damageShadeBeam(ServerLevel level, LivingEntity shooter, LivingEntity target) {
+        if (target.isRemoved() || !target.isAlive() || !isEnemy(target, shooter)) {
+            return;
+        }
+        HatType route = HatType.WHITE;
+        // 伤害**记在召唤者头上**：分身自己只是一个生物，某些 Boss（星之魔女就是）
+        // 在 die() 里会问「凶手是不是玩家」，不是就把死亡拦下来、把血补回去 ——
+        // 表现就是「被分身打死会满血复活」。记到玩家身上就按正常击杀走。
+        LivingEntity credit = shooter;
+        if (shooter instanceof HatSummon summon) {
+            route = summon.route();
+            LivingEntity owner = summon.ownerEntity(level);
+            if (owner != null) {
+                credit = owner;
+            }
+        }
+        // 先扣百分比那部分（绕过减伤），再用正常 hurt() 收尾 —— 顺序和正主一致
+        float before = target.getHealth();
+        applyPercentageDamage(credit, target, HatType.ALL, 1.0F);
+        if (target.isRemoved() || !target.isAlive()) {
+            return;
+        }
+        DamageSource source = HatSettings.damageSource(level, credit, HatType.ALL);
+        // 先清零受伤冷却，不然每刻这点伤害会被 10 刻无敌帧整个吃掉
+        Vec3 motion = target.getDeltaMovement();
+        float beforeFlat = target.getHealth();
+        pierceHurt(target, source, HatSettings.routeDamage(route));
+        if (target.isAlive() && beforeFlat - target.getHealth() < HatSettings.routeDamage(route) * 0.25F) {
+            clampPierce(target, beforeFlat * HatSettings.healthDamageRatio(HatType.ALL));
+        }
+        target.setDeltaMovement(motion);
+        target.hurtMarked = true;
+        // 分身打的也进破防的账
+        settleForce(target, Math.max(0.0F, before - target.getHealth()),
+                HatSettings.routeDamage(route) + before * HatSettings.healthDamageRatio(HatType.ALL));
+    }
+
+    /**
+     * 把一份伤害拆成 {@link #PIERCE_SPLIT} 段分别 {@code hurt()}（破「每击上限」）。
+     */
+    static void pierceHurt(LivingEntity target, DamageSource source, float total) {
+        float per = total / PIERCE_SPLIT;
+        for (int i = 0; i < PIERCE_SPLIT; i++) {
+            if (target.isRemoved() || !target.isAlive()) {
+                return;
+            }
+            // 每段都得先清零无敌帧，否则第二段起全被 10 刻受伤冷却吃掉
+            target.invulnerableTime = 0;
+            target.hurt(source, per);
+        }
+    }
+
+    /** 「压最大生命」用的修饰符（Forge 走 UUID + 名字）。 */
+    private static final UUID MAX_HEALTH_PIERCE_ID = UUID.fromString("9e2d41c6-0b7a-4f13-9a55-6c1d8e3f2b04");
+    private static final String MAX_HEALTH_PIERCE_NAME = "hatmod_max_health_pierce";
+
+    /**
+     * 破防阶梯的最后一级：**临时压低目标的最大生命**。
+     *
+     * <p>原版在最大生命被改小时会把当前血量夹到新上限（`LivingEntity#onAttributeUpdated`），
+     * 这一下**不经过任何伤害计算** —— 「每击上限 / 减伤 / 无敌阶段 / 伤害类型免疫」全都管不着它。
+     * 压完立刻把上限还原：上限回去了，掉的血不会回来。
+     *
+     * <p>留底：不会压到 1 点以下，也不低于最大生命的 5%，收尾交给正常的 {@code hurt()}。
+     */
+    static void clampPierce(LivingEntity target, float amount) {
+        if (amount <= 0.0F || target.isRemoved() || !target.isAlive()) {
+            return;
+        }
+        AttributeInstance maxHealth = target.getAttribute(Attributes.MAX_HEALTH);
+        if (maxHealth == null) {
+            return;
+        }
+        double max = maxHealth.getValue();
+        float floor = Math.max(1.0F, target.getMaxHealth() * 0.05F);
+        double wanted = Math.max(floor, target.getHealth() - amount);
+        double shrink = Math.min(0.0D, wanted - max);
+        if (shrink >= 0.0D) {
+            return;
+        }
+        try {
+            maxHealth.addTransientModifier(new AttributeModifier(
+                    MAX_HEALTH_PIERCE_ID, MAX_HEALTH_PIERCE_NAME, shrink, AttributeModifier.Operation.ADDITION));
+        } catch (IllegalArgumentException ignored) {
+            return;
+        }
+        // 立刻还原上限：血已经被夹下去了，这一下不会回去
+        maxHealth.removeModifier(MAX_HEALTH_PIERCE_ID);
+        // 这一下也是绕过伤害系统直接改的血量，同样要跟对方的真实存储对账
+        syncChannel(target);
+    }
+
+    /**
+     * 记一笔：这一轮在这个目标身上**应该**打掉多少、**实际**掉了多少。
+     *
+     * <p>「实际」是 {@code getHealth()} 的差值 —— 不估算对方减免了多少，直接量结果。
+     */
+    /** 破防：累计缺口达到「目标最大生命的这个比例」就直接尾杀。 */
+    private static final float DEFICIT_RATIO = 0.25F;
+    /** 缺口的下限：小怪别因为几点差额就被点名。 */
+    private static final float DEFICIT_MIN = 40.0F;
+    /** 目标 -> {累计被吃掉的伤害, 最后一次记账的毫秒时间}。 */
+    private static final Map<UUID, float[]> DEFICIT = new HashMap<>();
+
+    static void noteCycleDamage(LivingEntity target, float dealt, float intended) {
+        if (HatSettings.forceBreak() && HIT_THIS_SECOND.size() <= 512) {
+            HIT_THIS_SECOND.put(target.getUUID(), target);
+        }
+        float[] entry = CYCLE_DAMAGE.get(target.getUUID());
+        if (entry == null) {
+            entry = new float[]{0.0F, 0.0F};
+            CYCLE_DAMAGE.put(target.getUUID(), entry);
+        }
+        entry[0] += Math.max(0.0F, dealt);
+        entry[1] += Math.max(0.0F, intended);
+        // 破防：累计「理论上应该打出来的伤害」，给秒杀门槛用
+        if (HatSettings.forceBreak()) {
+            if (EXEC_BUDGET.size() > 512) {
+                EXEC_BUDGET.clear();
+                EXEC_LOCKED_LOGGED.clear();
+            }
+            EXEC_BUDGET.merge(target.getUUID(), Math.max(0.0F, intended), Float::sum);
+        }
+    }
+
+    /** 目标 -> 累计「理论上应该造成的伤害」。 */
+    private static final Map<UUID, Float> EXEC_BUDGET = new HashMap<>();
+    /** 已经提示过「尾杀锁定」的目标，别每刻刷屏。 */
+    private static final Set<UUID> EXEC_LOCKED_LOGGED = new HashSet<>();
+
+    /** 这一秒里我们打到过谁（光柱、近战、召唤物都算）。 */
+    private static final Map<UUID, LivingEntity> HIT_THIS_SECOND = new HashMap<>();
+    /** 上一秒结算时的血量快照，用来判断「打了，但血一点没动」。 */
+    private static final Map<UUID, Float> HEALTH_SNAPSHOT = new HashMap<>();
+    /**
+     * 目标 -> 连着多少秒「打得到、血量一点没动」。
+     *
+     * <p>判据本来是「按总血量算出还要打几轮」，问题出在**分母**上：永爱之刃那台「黑塔」
+     * 把 {@code getHealth()} 和 {@code getMaxHealth()} 都写死成 2^31-1、{@code hurt()}
+     * 直接 {@code return false}，按它报的血量算轮数会得到天文数字，这道门永远不开。
+     *
+     * <p>所以判据改成看**血量快照**：每秒比一次，打得到但数值一动不动，就记一秒。
+     * 它报的数是不是真的都骗不过这里 —— 真掉血就会下降，下降就清零。
+     */
+    private static final Map<UUID, Integer> ZERO_ROUNDS = new HashMap<>();
+    /** 目标 -> 最近一轮「理论上打出去多少」。 */
+    private static final Map<UUID, Float> ROUND_OUTPUT = new HashMap<>();
+    /** 连着这么多秒打得到却一点血没掉，就不再等「打满一条命」的预算，直接尾杀。 */
+    private static final int MAX_EXEC_ROUNDS = 5;
+
+    /** 最近一次「谁打的它」：处决窗口要按**出手者的链路阶段**判。 */
+    private static final Map<UUID, LivingEntity> HIT_BY = new HashMap<>();
+    /** 牛仔帽一轮照射的最后这么多刻算「尾声」。 */
+    private static final int HAT_FINISH_WINDOW_TICKS = 40;
+
+    /**
+     * 这个出手者现在是不是处在**链路尾声**。
+     *
+     * <p>破防的处决（{@link #finishOff}）只在这段时间里允许发生：债和快照全程照记，
+     * 但真正动手要等链路走到收尾，不在光束刚亮起来的时候就开始抹人。
+     */
+    private static boolean isFinishWindow(LivingEntity wearer) {
+        if (wearer == null) {
+            return false;
+        }
+        if (BrainrotCycle.isRunning(wearer)) {
+            return BrainrotCycle.inFinishWindow(wearer);
+        }
+        HatState state = STATES.get(wearer.getUUID());
+        return state != null && state.flash > 0 && state.flash <= HAT_FINISH_WINDOW_TICKS;
+    }
+
+    /** 这个目标现在能不能被处决：得有一个正处在链路尾声的出手者。 */
+    private static boolean finishAllowed(LivingEntity target) {
+        return isFinishWindow(HIT_BY.get(target.getUUID()));
+    }
+
+    /**
+     * 破防记账的一个入口：这笔伤害是戴帽者（或他的召唤物）打出去的，就记下目标。
+     *
+     * <p>以前只有光柱结算会记账，近战 / 召唤物打出去的一概不进账本。这里补上；
+     * 至于「到底掉没掉血」，交给每秒的血量快照去判断，不信任何一方自己报的数。
+     */
+    static void noteHitByHat(LivingEntity victim, @Nullable Entity attacker) {
+        if (!HatSettings.forceBreak() || attacker == null || attacker == victim) {
+            return;
+        }
+        if (!(attacker instanceof LivingEntity source)) {
+            return;
+        }
+        if (!isWearingHat(source) && !(source instanceof HatSummon)) {
+            return;
+        }
+        if (HIT_THIS_SECOND.size() > 512) {
+            HIT_THIS_SECOND.clear();
+            HIT_BY.clear();
+        }
+        HIT_THIS_SECOND.put(victim.getUUID(), victim);
+        HIT_BY.put(victim.getUUID(), source);
+    }
+
+    /**
+     * 秒杀门槛：这一场**理论上该打出来的伤害**先打满一条命，才允许走尾杀。
+     *
+     * <p>按「血量 ÷ 每轮输出」算下来要 N 轮才能打死的 Boss，前 N 轮只有原来那些手段，
+     * 第 N+1 轮才解锁秒杀。这里直接用「累计 intended ≥ 目标最大生命」当判据：
+     * 每轮打掉一条命的 1/N，累计到一条命正好是第 N 轮结束。
+     */
+    private static boolean executionUnlocked(LivingEntity target) {
+        // 打得到、血量却连着 MAX_EXEC_ROUNDS 秒一点没动：它报的血量是假的（黑塔那种），
+        // 「按血量算还要打几轮」这个判据在它身上没有意义，直接放行
+        if (ZERO_ROUNDS.getOrDefault(target.getUUID(), 0) >= MAX_EXEC_ROUNDS) {
+            return true;
+        }
+        float done = EXEC_BUDGET.getOrDefault(target.getUUID(), 0.0F);
+        float need = Math.max(40.0F, target.getMaxHealth());
+        if (done < need) {
+            if (EXEC_LOCKED_LOGGED.add(target.getUUID())) {
+                HatMod.LOGGER.info("[hatmod] 破防：{} 理论伤害还没打满（{} / {}），尾杀暂不开放",
+                        target.getType(), Math.round(done), Math.round(need));
+            }
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * 破防的**统一记账口**：任何帽子、任何伤害路径都从这里过。
+     *
+     * <p>记一笔「应该打出多少 / 实际掉了多少」；目标已经被判定破防的话，
+     * 当场把差额补写进它的真实血量（{@link #forceHealth}）。
+     */
+    static void settleForce(LivingEntity target, float dealt, float intended) {
+        noteCycleDamage(target, dealt, intended);
+        if (FORCE_TARGETS.contains(target.getUUID())) {
+            forceHealth(target, intended - dealt);
+        }
+        accumulateDeficit(target, dealt, intended);
+    }
+
+    /**
+     * 破防的另一条判据：**它吃掉多少伤害，就攒多少**。
+     *
+     * <p>原本要等血量被压到地板才会走 {@link #finishOff}；碰到减伤、单次上限、无敌阶段的
+     * Boss，血根本压不下去，尾杀就永远进不了。这里每次结算都记「应该打出 / 实际掉了」的差额，
+     * 累计到 {@link #DEFICIT_RATIO} 就直接尾杀 —— 不给它把血磨回来的机会。
+     */
+    private static void accumulateDeficit(LivingEntity target, float dealt, float intended) {
+        if (!HatSettings.forceBreak() || target instanceof Player || !target.isAlive()) {
+            return;
+        }
+        float missed = intended - Math.max(0.0F, dealt);
+        if (missed <= 0.0F) {
+            return;
+        }
+        UUID id = target.getUUID();
+        float[] entry = DEFICIT.get(id);
+        if (entry == null) {
+            if (DEFICIT.size() > 512) {
+                DEFICIT.clear();
+            }
+            entry = new float[]{0.0F, 0.0F};
+            DEFICIT.put(id, entry);
+        }
+        entry[0] += missed;
+        entry[1] = (float) System.currentTimeMillis();
+        float limit = Math.max(DEFICIT_MIN, target.getMaxHealth() * DEFICIT_RATIO);
+        if (entry[0] >= limit) {
+            // 债记着不动，但要等出手者的链路走到尾声才真动手
+            if (!finishAllowed(target)) {
+                return;
+            }
+            float total = entry[0];
+            DEFICIT.remove(id);
+            HatMod.LOGGER.warn("[hatmod] 破防：{} 累计吃掉 {} 点伤害（阈值 {}），链路已到尾声，走尾杀",
+                    target.getType(), Math.round(total), Math.round(limit));
+            finishOff(target);
+        }
+    }
+
+    /** 新一轮开始：上一轮的账清掉。 */
+    static void resetCycleDamage() {
+        CYCLE_DAMAGE.clear();
+    }
+
+    /**
+     * 一轮结束时的判定：**实际掉血 / 应该造成的伤害** 低于 {@link #FORCE_THRESHOLD} 的目标，
+     * 下一轮标成「破防」；打得动的就恢复正常结算。
+     */
+    private static void evaluateForceCycle(net.minecraft.server.MinecraftServer server) {
+        // 10 秒没有新缺口的记账作废，免得换个怪还接着上一只的账
+        long now = System.currentTimeMillis();
+        DEFICIT.entrySet().removeIf(entry -> now - (long) entry.getValue()[1] > 10_000L);
+        FORCE_TARGETS.clear();
+        if (!HatSettings.forceBreak()) {
+            // 破防模式关着：连账都不记，一点不碰对方的血量
+            CYCLE_DAMAGE.clear();
+            ZERO_ROUNDS.clear();
+            ROUND_OUTPUT.clear();
+            HIT_THIS_SECOND.clear();
+            HEALTH_SNAPSHOT.clear();
+            return;
+        }
+        for (Map.Entry<UUID, float[]> entry : CYCLE_DAMAGE.entrySet()) {
+            float dealt = entry.getValue()[0];
+            float intended = entry.getValue()[1];
+            if (intended > 0.0F && dealt < intended * FORCE_THRESHOLD) {
+                FORCE_TARGETS.add(entry.getKey());
+            }
+            // 这一轮理论上打了多少，留着给「还要打几轮」当分母
+            ROUND_OUTPUT.put(entry.getKey(), intended);
+        }
+        CYCLE_DAMAGE.clear();
+
+        // 血量快照对比：这一秒里我们打到过的目标，血量一动不动 = 它根本吃不进伤害。
+        // 不依赖哪条伤害路径（光柱、近战、召唤物都一样），也不信它自己报的掉血数。
+        for (Map.Entry<UUID, LivingEntity> hit : HIT_THIS_SECOND.entrySet()) {
+            LivingEntity target = hit.getValue();
+            if (target == null || target.isRemoved() || !target.isAlive()) {
+                ZERO_ROUNDS.remove(hit.getKey());
+                HEALTH_SNAPSHOT.remove(hit.getKey());
+                continue;
+            }
+            float current = hatmodGetHealth(target);
+            Float before = HEALTH_SNAPSHOT.put(hit.getKey(), current);
+            if (before == null) {
+                continue;                       // 第一次打到，先记一条基线
+            }
+            if (current < before) {             // 真的掉血了，一切照旧
+                ZERO_ROUNDS.remove(hit.getKey());
+                continue;
+            }
+            if (ZERO_ROUNDS.size() > 512) {
+                ZERO_ROUNDS.clear();
+            }
+            int seconds = ZERO_ROUNDS.merge(hit.getKey(), 1, Integer::sum);
+            // 每满 MAX_EXEC_ROUNDS 秒试一次（失败了下个周期还会再试，不会卡死），
+            // 但要等链路尾声 —— 光束刚亮起来时不抹人
+            if (seconds % MAX_EXEC_ROUNDS == 0 && finishAllowed(target)) {
+                HatMod.LOGGER.warn("[hatmod] 破防：{} 连着 {} 秒打得到、血量一点没动，"
+                        + "判定为硬免疫，出尾杀", target.getType(), seconds);
+                finishOff(target);
+            }
+        }
+        HIT_THIS_SECOND.clear();
+    }
+
+    /** 这个目标这一轮是不是处于「破防」状态。 */
+    static boolean isForceTarget(LivingEntity target) {
+        return FORCE_TARGETS.contains(target.getUUID());
+    }
+
+    /**
+     * 破防状态下强制扣血：先走 {@code setHealth}（它自己的掉血流程、仇恨、死亡都还算数），
+     * 血一点没动（有血量镜像 / 写了会被改回的 Boss）就直接写 {@code health} 字段。
+     *
+     * <p>地板照旧留 5%（或 1 点），收尾交给正常伤害 —— {@code setHealth} 不会触发 {@code die()}。
+     */
+    static void forceHealth(LivingEntity target, float amount) {
+        if (!HatSettings.forceBreak() || amount <= 0.0F || target.isRemoved() || !target.isAlive()) {
+            return;
+        }
+        ensureFightable(target);
+        float floor = Math.max(1.0F, target.getMaxHealth() * 0.05F);
+        float current = hatmodGetHealth(target);
+        float want = Math.max(floor, current - amount);
+        if (want >= current) {
+            return;
+        }
+        // 写血 + 找出它的真血字段一起写，并记住这个值；每刻末尾再覆盖一次
+        writeTrueHealth(target, want);
+    }
+
+
+    // ------------------------------------------------------------------
+    // 破防 v2：血量托管制
+    //
+    // 看了这么多 Boss，共同点只有一个：血量被搬到某个地方、由它们自己每刻写。
+    // 所以这里不去拆它们的逻辑，而是：
+    //   1. 探测「权威血量」到底存在哪（五通道，按值认、不按名字认）；
+    //   2. 破防命中时写进去，并记下"应该是多少"；
+    //   3. 每个服务器刻的**最后**再覆盖一遍 —— 回血、满血循环、镜像同步全部抹平；
+    //   4. 血被压到地板还判活着，才走终局：先求正常死亡事件，拒收就套永爱式硬杀。
+    // ------------------------------------------------------------------
+
+    /** 一个被接管目标的记录。 */
+    private static final class Seal {
+        float hp;
+        @Nullable
+        HealthChannel channel;
+        int finishTries;
+        boolean logged;
+
+        Seal(float hp, @Nullable HealthChannel channel) {
+            this.hp = hp;
+            this.channel = channel;
+        }
+    }
+
+    /** 把「权威血量」读出来 / 写进去的最小接口。 */
+    private interface HealthChannel {
+        float read(LivingEntity entity);
+
+        void write(LivingEntity entity, float value);
+    }
+
+    /** 破防模式下「删不掉」的登记表：被外人删掉的虚影 / 铁托会在几刻内被拉回来。 */
+    private static final Map<UUID, Entity> WATCHED = new HashMap<>();
+
+    /** 被挖走之前最后一次「正常」的位置：救回来的时候原地放回去。 */
+    private static final Map<UUID, double[]> LAST_POS = new HashMap<>();
+
+    /** 登记一只虚影 / 铁托（只在服务端登记），顺手记住它在世界里的位置。 */
+    static void watchSummon(Entity entity) {
+        if (!(entity.level() instanceof ServerLevel)) {
+            return;
+        }
+        WATCHED.put(entity.getUUID(), entity);
+        if (!entity.isRemoved() && entity.getY() > -1000.0D) {
+            LAST_POS.put(entity.getUUID(), new double[]{entity.getX(), entity.getY(), entity.getZ()});
+        }
+    }
+
+    /** 本体自己收掉它的时候，从登记表里摘掉（不然下一 tick 又给拉回来了）。 */
+    static void forgetSummon(Entity entity) {
+        WATCHED.remove(entity.getUUID());
+        LAST_POS.remove(entity.getUUID());
+    }
+
+    /**
+     * 每 5 刻看一遍登记表：被外人删掉的拉回来；开了「实体表接管」就再塞回实体管理器。
+     *
+     * <p>这是 pig2 {@code fukkatsu} 的路子，只是我们只拉自己人，不碰别人的实体。
+     */
+    private static void reviveSummons(MinecraftServer server) {
+        if (!HatSettings.forceBreak() || WATCHED.isEmpty() || server.getTickCount() % 5 != 0) {
+            return;
+        }
+        Iterator<Map.Entry<UUID, Entity>> iterator = WATCHED.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Entity entity = iterator.next().getValue();
+            if (!(entity instanceof LivingEntity living)) {
+                iterator.remove();
+                continue;
+            }
+            if (!living.isRemoved() && living.isAlive()) {
+                continue;
+            }
+            // 正常死亡就不管了，只救「被人挖走」的
+            if (isTrulyDead(living) && living.isRemoved() && living.getHealth() <= 0.0F) {
+                iterator.remove();
+                continue;
+            }
+            if (!(living.level() instanceof ServerLevel level)) {
+                iterator.remove();
+                continue;
+            }
+            unsetRemoved(living);
+            boolean present = level.getEntity(living.getUUID()) != null;
+            if (!present) {
+                present = level.addFreshEntity(living);
+            }
+            if (!present && HatSettings.entityLock() && reinsertIntoEntityManager(level, living)) {
+                HatMod.LOGGER.warn("[hatmod] {} 被从实体表里挖走，已强行塞回", living.getType());
+                present = true;
+            }
+            if (present) {
+                // pig2 的清场会先把人传到 (10000, -10000, 10000) 再打上隐身标记，
+                // 救回来的时候得把它放回原处、把隐身摘掉，否则「人回来了但看不见」
+                double[] pos = LAST_POS.get(living.getUUID());
+                if (pos != null && living.getY() < -1000.0D) {
+                    living.moveTo(pos[0], pos[1], pos[2]);
+                }
+                living.setInvisible(false);
+            } else {
+                iterator.remove();
+            }
+        }
+    }
+
+    /** {@code Entity.unsetRemoved()} 是 protected，反射叫一下（1.20.1 生产环境是 SRG 名）。 */
+    private static void unsetRemoved(Entity entity) {
+        for (String name : new String[]{"unsetRemoved", "m_146912_"}) {
+            for (Class<?> c = entity.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                try {
+                    java.lang.reflect.Method method = c.getDeclaredMethod(name);
+                    method.setAccessible(true);
+                    method.invoke(entity);
+                    return;
+                } catch (NoSuchMethodException ignored) {
+                    // 换下一个名字 / 父类
+                } catch (Throwable ignored) {
+                    return;
+                }
+            }
+        }
+    }
+
+    /**
+     * pig2 那招：直接往 {@code PersistentEntitySectionManager} 里塞实体。
+     *
+     * <p>按类型找字段和方法，不按名字 —— 1.20.1 生产环境全是 SRG 名。
+     */
+    /** 拿到这个维度的 {@code PersistentEntitySectionManager}（按类型找，不按名字）。 */
+    @Nullable
+    private static Object entityManagerOf(ServerLevel level) {
+        for (Class<?> c = level.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (Field field : c.getDeclaredFields()) {
+                if (field.getType().getName().contains("PersistentEntitySectionManager")) {
+                    try {
+                        field.setAccessible(true);
+                        return field.get(level);
+                    } catch (Throwable ignored) {
+                        return null;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * pig2 同款清场：把它「传去天边 + 标成已删除 + 从实体管理器里抠掉」。
+     *
+     * <p>顺序照抄它的 {@code removeTheEnemiesInTheServerLevel}：先挪走（这样存档里也不会留在原地），
+     * 再 {@code setRemoved(KILLED)}，最后把它从实体管理器的几张表里摘出来。
+     * 只在我们已经把正常死亡 / 后门都试过、它还不死的时候才走这一步。
+     */
+    private static void pig2Purge(Entity entity) {
+        if (!(entity.level() instanceof ServerLevel level) || entity instanceof Player) {
+            return;
+        }
+        try {
+            // ① 先照 pig2 的 removeTheEnemiesInTheServerLevel 走一遍
+            if (entity instanceof LivingEntity living) {
+                living.kill();
+            }
+            entity.setInvisible(true);
+            entity.moveTo(10000.0D, -10000.0D, 10000.0D);
+            entity.setRemoved(Entity.RemovalReason.KILLED);
+            // ② 区块缓存里也摘一次（pig2 是 serverLevel.getChunkSource().removeEntity）
+            try {
+                Object chunkSource = level.getChunkSource();
+                for (java.lang.reflect.Method method : chunkSource.getClass().getMethods()) {
+                    if (method.getName().equals("removeEntity") && method.getParameterCount() == 1) {
+                        method.setAccessible(true);
+                        method.invoke(chunkSource, entity);
+                        break;
+                    }
+                }
+            } catch (Throwable ignored) {
+                // 区块缓存摘不掉不影响实体表那一步
+            }
+            Object manager = entityManagerOf(level);
+            if (manager != null) {
+                java.util.UUID id = entity.getUUID();
+                Integer eid = entity.getId();
+                for (Class<?> c = manager.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                    for (Field field : c.getDeclaredFields()) {
+                        try {
+                            field.setAccessible(true);
+                            Object value = field.get(manager);
+                            if (value instanceof java.util.Collection<?> collection) {
+                                collection.remove(id);
+                            } else if (value instanceof java.util.Map<?, ?> map) {
+                                map.remove(id);
+                                map.remove(eid);
+                            }
+                        } catch (Throwable ignored) {
+                            // 单张表清不掉不影响整体
+                        }
+                    }
+                }
+            }
+            // ③ 最后把分区（EntitySection）里那一份也剔掉，不然重新加载区块又冒出来
+            purgeFromSections(manager, entity);
+            HatMod.LOGGER.warn("[hatmod] 尾杀清场：{} 已从实体表摘除", entity.getType());
+        } catch (Throwable ignored) {
+            // 摘不掉就交给 discard 之后的轮询
+        }
+    }
+
+    /** 把实体从它所在的 EntitySection 里剔掉（pig2 是整段重建，我们逐个删）。 */
+    private static void purgeFromSections(Object manager, Entity entity) {
+        try {
+            for (Class<?> c = manager.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                for (Field field : c.getDeclaredFields()) {
+                    field.setAccessible(true);
+                    Object value = field.get(manager);
+                    if (!(value instanceof java.util.Map<?, ?> sections)) {
+                        continue;
+                    }
+                    for (Object section : sections.values()) {
+                        if (section == null) {
+                            continue;
+                        }
+                        for (java.lang.reflect.Method getter : section.getClass().getMethods()) {
+                            if (getter.getParameterCount() != 0
+                                    || !getter.getReturnType().getName().contains("ClassInstanceMultiMap")) {
+                                continue;
+                            }
+                            Object storage = getter.invoke(section);
+                            if (storage == null) {
+                                continue;
+                            }
+                            for (java.lang.reflect.Method remove : storage.getClass().getMethods()) {
+                                if (remove.getName().equals("remove") && remove.getParameterCount() == 1) {
+                                    remove.invoke(storage, entity);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+            // 分区剔不掉就靠 setRemoved 那一步
+        }
+    }
+
+    private static boolean reinsertIntoEntityManager(ServerLevel level, Entity entity) {
+        try {
+            Object manager = entityManagerOf(level);
+            if (manager == null) {
+                return false;
+            }
+            for (java.lang.reflect.Method method : manager.getClass().getMethods()) {
+                Class<?>[] params = method.getParameterTypes();
+                if (params.length == 2 && params[0] == Entity.class && params[1] == boolean.class
+                        && method.getReturnType() == boolean.class) {
+                    method.setAccessible(true);
+                    return Boolean.TRUE.equals(method.invoke(manager, entity, false));
+                }
+            }
+        } catch (Throwable ignored) {
+            // 塞不回去就算了，至少 unsetRemoved 已经做了
+        }
+        return false;
+    }
+
+    /** 非破防时也要用的通道缓存（按需探测一次）。 */
+    private static final Map<UUID, HealthChannel> CHANNELS = new HashMap<>();
+
+    /**
+     * 把实体身上现在的血量同步进它真正的血量存储（世界变量 / 自有字段 / 镜像）。
+     *
+     * <p>我们的百分比伤害、压最大生命都是绕过伤害系统直接改实体血量的。对
+     * 「实体血量只是副本」的 Boss（Witheria 的世界变量），这会让它的校验判定成篡改，
+     * 于是删掉自己重新召唤 —— 必须每一步都跟着对账。
+     */
+    static void syncChannel(LivingEntity target) {
+        HealthChannel channel = channelOf(target);
+        if (channel != null && channel != VANILLA) {
+            channel.write(target, target.getHealth());
+            if (LOGGED_CHANNELS.add(target.getClass())) {
+                HatMod.LOGGER.info("[hatmod] {} 的血量托管在 {} 里，百分比伤害改的是那一份",
+                        target.getType(), channel.getClass().getSimpleName());
+            }
+        }
+    }
+
+    /** 每种怪只报一次用的。 */
+    private static final java.util.Set<Class<?>> LOGGED_CHANNELS = new java.util.HashSet<>();
+
+    /** 取（必要时探测一次）这个目标的血量通道，按 UUID 缓存。 */
+    @Nullable
+    private static HealthChannel channelOf(LivingEntity target) {
+        HealthChannel channel = CHANNELS.get(target.getUUID());
+        if (channel == null) {
+            if (CHANNELS.size() > 512) {
+                CHANNELS.clear();
+            }
+            channel = detectChannel(target);
+            CHANNELS.put(target.getUUID(), channel);
+        }
+        return channel;
+    }
+
+    /**
+     * 破防模式下的 {@code getHealth()}：读它**真正的**血量存储。
+     *
+     * <p>原版 {@code getHealth()} 对这类 Boss 是被钉死的假值 —— 星之魔女把同步血量固定成
+     * 1.0、Witheria 把真血放进世界变量、亚伯伦放在自有字段里。拿假值去算「当前生命 × 5%」，
+     * 结果就是 0.05 点，等于没打。破防既然已经接管了它们的血量存储，就顺手用同一份数据来读。
+     *
+     * <p>没开破防、或者探测不到通道时，退回原版 {@code getHealth()}，行为与以前一致。
+     */
+    static float hatmodGetHealth(LivingEntity target) {
+        if (!HatSettings.forceBreak()) {
+            return target.getHealth();
+        }
+        HealthChannel channel = channelOf(target);
+        if (channel == null || channel == VANILLA) {
+            return target.getHealth();
+        }
+        try {
+            return channel.read(target);
+        } catch (Throwable ignored) {
+            return target.getHealth();
+        }
+    }
+
+    /** 破防接管的目标 -> 记录。 */
+    private static final Map<UUID, Seal> SEALED = new HashMap<>();
+    /** 每种怪探测出来的通道（只探一次）。 */
+    private static final Map<Class<?>, List<Field>> FLOAT_FIELDS = new HashMap<>();
+
+    private static final HealthChannel VANILLA = new HealthChannel() {
+        @Override
+        public float read(LivingEntity entity) {
+            return entity.getHealth();
+        }
+
+        @Override
+        public void write(LivingEntity entity, float value) {
+            entity.setHealth(value);
+        }
+    };
+
+    /**
+     * 找出「原版血量」所在的那条同步数据（{@code DATA_HEALTH_ID}）。做法是**试写**：
+     * 值等于 {@code getHealth()} 的浮点同步数据，改一下看 {@code getHealth()} 跟不跟。
+     *
+     * <p>为什么不按名字取：1.20.1 生产环境里它是 SRG 的 {@code f_...}，NeoForge 下才是
+     * {@code DATA_HEALTH_ID}；而且有的模组会把自己的血量也塞进同步数据 —— 按值认最稳。
+     *
+     * <p>这一条是给「只把 {@code setHealth()} 改成不理会外部写入、但 {@code getHealth()}
+     * 仍然读同步数据」的 Boss 准备的：直接写底层数据，绕过那个被改过的 setter。
+     */
+    @Nullable
+    private static EntityDataAccessor<Float> rawHealthAccessor(LivingEntity target) {
+        float health = target.getHealth();
+        if (health <= 2.0F) {
+            return null;
+        }
+        for (EntityDataAccessor<?> accessor : accessors(target, Float.class)) {
+            try {
+                Object current = target.getEntityData().get(accessor);
+                if (!(current instanceof Float value) || Math.abs(value - health) > 0.01F) {
+                    continue;
+                }
+                @SuppressWarnings("unchecked")
+                EntityDataAccessor<Float> data = (EntityDataAccessor<Float>) accessor;
+                float probe = health - 1.0F;
+                target.getEntityData().set(data, probe);
+                boolean works = Math.abs(target.getHealth() - probe) <= 0.01F;
+                // 试探完立刻还原：不是这条就一点痕迹都不留
+                target.getEntityData().set(data, health);
+                if (works) {
+                    return data;
+                }
+            } catch (Throwable ignored) {
+                // 下一个
+            }
+        }
+        return null;
+    }
+
+    /** 直接写原版血量同步数据（绕过被覆盖的 {@code setHealth}）。 */
+    private static final class DataChannel implements HealthChannel {
+        private final EntityDataAccessor<Float> accessor;
+
+        DataChannel(EntityDataAccessor<Float> accessor) {
+            this.accessor = accessor;
+        }
+
+        @Override
+        public float read(LivingEntity entity) {
+            try {
+                Float value = entity.getEntityData().get(accessor);
+                return value == null ? entity.getHealth() : value;
+            } catch (Throwable ignored) {
+                return entity.getHealth();
+            }
+        }
+
+        @Override
+        public void write(LivingEntity entity, float value) {
+            try {
+                entity.getEntityData().set(accessor,
+                        Math.max(0.0F, Math.min(value, entity.getMaxHealth())));
+            } catch (Throwable ignored) {
+                // 写不进去就交给每刻覆盖那一道
+            }
+        }
+    }
+
+    /**
+     * 探测这个生物的「权威血量」在哪。
+     *
+     * <p>顺序（贵的、特殊的放前面）：
+     * <ol>
+     *   <li><b>G 世界变量</b> —— MCreator 那系把血放在 {@code ModVariables} 里的（Witheria）；</li>
+     *   <li><b>F 权威血量方法对</b> —— {@code xxxHealth()} / {@code setXxxHealth(float)}，
+     *       对应那些把原版血量钉成假值的 Boss（星之魔女恒为 1.0）；</li>
+     *   <li><b>A 原版 setHealth</b>；</li>
+     *   <li><b>E 原版血量同步数据</b>（绕过被覆盖的 setHealth）；</li>
+     *   <li><b>B 自有字段</b>（Regnator / 星辉死神的 {@code HEALTS}）；</li>
+     *   <li><b>C 同步浮点对</b>（variant_zsiein 的 {@code EXALTED_NORMAL - EXALTED_AWAY}）；</li>
+     *   <li><b>D 同步字符串</b>（星之魔女的 {@code BOSS_HEALTH}）：先按"等于 getHealth()"严格认，
+     *       认不出来再看是不是血量被钉死了 —— 那时放宽成"是个合理血量就认"。</li>
+     * </ol>
+     */
+    @Nullable
+    private static HealthChannel detectChannel(LivingEntity target) {
+        // H：星之魔女 —— 走它自己的「剧情血量」通道，跳过它给外来伤害设的四道闸
+        HealthChannel controlled = controllerHealthChannel(target);
+        if (controlled != null) {
+            return controlled;
+        }
+
+        // G：世界变量（Witheria）
+        HealthChannel world = worldVariableChannel(target);
+        if (world != null) {
+            return world;
+        }
+
+        // F：权威血量方法对（星之魔女）
+        HealthChannel authoritative = authoritativeHealthChannel(target);
+        if (authoritative != null) {
+            return authoritative;
+        }
+
+        // A：原版 setHealth 真的能改血量
+        try {
+            float before = target.getHealth();
+            if (before > 2.0F) {
+                target.setHealth(before - 1.0F);
+                boolean works = Math.abs(target.getHealth() - (before - 1.0F)) < 0.01F;
+                target.setHealth(before);
+                if (works) {
+                    return VANILLA;
+                }
+            }
+        } catch (Throwable ignored) {
+            // 继续往下探
+        }
+
+        // E：原版血量那条同步数据（DATA_HEALTH_ID）直接写 —— 绕过被覆盖的 setHealth
+        EntityDataAccessor<Float> rawHealth = rawHealthAccessor(target);
+        if (rawHealth != null) {
+            return new DataChannel(rawHealth);
+        }
+
+        // B：自有 float/double 字段，当前值等于 getHealth()
+        for (Field field : healthFields(target.getClass())) {
+            try {
+                double held = field.getType() == float.class ? field.getFloat(target) : field.getDouble(target);
+                if (Math.abs(held - target.getHealth()) <= 0.5D) {
+                    return new FieldChannel(field);
+                }
+            } catch (Throwable ignored) {
+                // 下一个
+            }
+        }
+
+        // C：同步数据里的两个浮点，满足 a - b == getHealth()
+        List<EntityDataAccessor<?>> floats = accessors(target, Float.class);
+        for (EntityDataAccessor<?> a : floats) {
+            for (EntityDataAccessor<?> b : floats) {
+                if (a == b) {
+                    continue;
+                }
+                try {
+                    Object va = target.getEntityData().get(a);
+                    Object vb = target.getEntityData().get(b);
+                    if (va instanceof Float fa && vb instanceof Float fb
+                            && Math.abs((fa - fb) - target.getHealth()) <= 0.5F) {
+                        return new SyncPairChannel(a, b);
+                    }
+                } catch (Throwable ignored) {
+                    // 下一个
+                }
+            }
+        }
+
+        // D：同步数据里的字符串
+        HealthChannel mirror = stringMirrorChannel(target, false);
+        if (mirror != null) {
+            return mirror;
+        }
+        if (isPinnedHealth(target)) {
+            // 血量被钉成假值的 Boss：字符串里的数字只要落在一个合理区间就认
+            return stringMirrorChannel(target, true);
+        }
+        return null;
+    }
+
+    /** D：同步数据里的字符串镜像。{@code relaxed} 打开时只要求"是个合理血量"。 */
+    @Nullable
+    private static HealthChannel stringMirrorChannel(LivingEntity target, boolean relaxed) {
+        float max = Math.max(1.0F, target.getMaxHealth());
+        for (EntityDataAccessor<?> accessor : accessors(target, String.class)) {
+            try {
+                Object raw = target.getEntityData().get(accessor);
+                if (!(raw instanceof String text)) {
+                    continue;
+                }
+                float parsed = Float.parseFloat(text.trim());
+                if (!Float.isFinite(parsed)) {
+                    continue;
+                }
+                boolean matched = relaxed
+                        ? parsed > 0.5F && parsed <= max + 0.5F
+                        : Math.abs(parsed - target.getHealth()) <= 0.5F;
+                if (matched) {
+                    return new SyncStringChannel(accessor);
+                }
+            } catch (Throwable ignored) {
+                // 下一个
+            }
+        }
+        return null;
+    }
+
+    /** 原版血量是不是被钉成假值了（星之魔女恒写 1.0，真血在别处）。 */
+    private static boolean isPinnedHealth(LivingEntity target) {
+        return target.getHealth() <= 1.5F && target.getMaxHealth() > 8.0F;
+    }
+
+    /**
+     * F：找一对「xxxHealth() / setXxxHealth(float)」。
+     *
+     * <p>星之魔女的真血走 {@code maidspell$authoritativeHealth()}，原版 {@code getHealth()}
+     * 恒为 1.0 —— 只认原版血量的话，百分比伤害会拿 1.0 去算，等于没打。
+     */
+    @Nullable
+    private static HealthChannel authoritativeHealthChannel(LivingEntity target) {
+        float max = Math.max(1.0F, target.getMaxHealth());
+        List<Class<?>> types = new ArrayList<>();
+        for (Class<?> c = target.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            types.add(c);
+        }
+        for (Class<?> iface : target.getClass().getInterfaces()) {
+            types.add(iface);
+        }
+        for (Class<?> type : types) {
+            for (java.lang.reflect.Method getter : type.getDeclaredMethods()) {
+                if (getter.getParameterCount() != 0) {
+                    continue;
+                }
+                Class<?> ret = getter.getReturnType();
+                if (ret != float.class && ret != double.class) {
+                    continue;
+                }
+                String name = getter.getName();
+                String lower = name.toLowerCase(java.util.Locale.ROOT);
+                if (!lower.contains("health") || lower.contains("max") || lower.equals("gethealth")) {
+                    continue;
+                }
+                // 同名 set 方法：名字里含同一段核心词（maidspell$setAuthoritativeHealth）
+                int dollar = name.indexOf('$');
+                String core = (dollar >= 0 ? name.substring(dollar + 1) : name).toLowerCase(java.util.Locale.ROOT);
+                for (Class<?> setterOwner : types) {
+                    for (java.lang.reflect.Method setter : setterOwner.getDeclaredMethods()) {
+                        if (setter.getParameterCount() != 1 || setter.getParameterTypes()[0] != float.class) {
+                            continue;
+                        }
+                        if (!setter.getName().toLowerCase(java.util.Locale.ROOT).contains(core)) {
+                            continue;
+                        }
+                        try {
+                            getter.setAccessible(true);
+                            setter.setAccessible(true);
+                            float current = ((Number) getter.invoke(target)).floatValue();
+                            if (current > 0.0F && current <= max + 0.5F
+                                    && Math.abs(current - target.getHealth()) > 0.01F) {
+                                return new MethodChannel(getter, setter);
+                            }
+                        } catch (Throwable ignored) {
+                            // 换下一对
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /** F 通道：走 mod 自己的「权威血量」读写方法。 */
+    private static final class MethodChannel implements HealthChannel {
+        private final java.lang.reflect.Method getter;
+        private final java.lang.reflect.Method setter;
+
+        MethodChannel(java.lang.reflect.Method getter, java.lang.reflect.Method setter) {
+            this.getter = getter;
+            this.setter = setter;
+        }
+
+        @Override
+        public float read(LivingEntity entity) {
+            try {
+                return ((Number) getter.invoke(entity)).floatValue();
+            } catch (Throwable ignored) {
+                return entity.getHealth();
+            }
+        }
+
+        @Override
+        public void write(LivingEntity entity, float value) {
+            try {
+                setter.invoke(entity, Math.max(0.0F, Math.min(value, entity.getMaxHealth())));
+            } catch (Throwable ignored) {
+                // 写不进去就交给每刻覆盖那一道
+            }
+        }
+    }
+
+    /**
+     * G：世界变量。MCreator 那一系（Witheria）把血放在 {@code ModVariables} 的
+     * {@code Witheria_Health} / {@code Witheria_True_Health} 里，实体血量只是副本 ——
+     * 只写实体血量会被它的校验抓（差值 > 4 就抹掉重召唤）。
+     */
+    @Nullable
+    // ------------------------------------------------------------------
+    // H：星之魔女（maidspell）—— 借它自己的「剧情血量」通道
+    // ------------------------------------------------------------------
+
+    private static final String WINEFOX_ENTITY =
+            "com.github.yimeng261.maidspell.compat.irons_spellbooks.entity.winefox.MagicalWinefoxBossEntity";
+    private static final String WINEFOX_CONTROLLER =
+            "com.github.yimeng261.maidspell.compat.irons_spellbooks.entity.winefox.WinefoxBossHealthController";
+
+    private static java.lang.reflect.Method WINEFOX_WRITE;
+    private static java.lang.reflect.Method WINEFOX_WITH_CAUSE;
+    private static Object WINEFOX_SCRIPTED_CAUSE;
+    private static boolean WINEFOX_PROBED;
+
+    /**
+     * 星之魔女把真血关在 {@code WinefoxBossHealthController} 里，外面写进去的血
+     * 都要过「战斗状态 / 每击间隔 / 单次上限 / 自适应 DPS 预算 / 高伤减免」这一串闸门，
+     * 连续几帧的百分比伤害基本全被丢掉 —— 看起来就是帽子没伤害。
+     *
+     * <p>它自己有一个 {@code Cause.SCRIPTED_TRANSITION}（剧情血量变更），那个 cause
+     * 不在 {@code isCappedCause} 里，闸门全跳过，直接精确写进 healthState 并同步镜像。
+     */
+    @Nullable
+    private static HealthChannel controllerHealthChannel(LivingEntity target) {
+        if (!WINEFOX_ENTITY.equals(target.getClass().getName())) {
+            return null;
+        }
+        if (!WINEFOX_PROBED) {
+            WINEFOX_PROBED = true;
+            try {
+                Class<?> entityType = Class.forName(WINEFOX_ENTITY);
+                Class<?> controller = Class.forName(WINEFOX_CONTROLLER);
+                Class<?> causeType = Class.forName(WINEFOX_CONTROLLER + "$Cause");
+                WINEFOX_WRITE = controller.getMethod("write", entityType, float.class);
+                WINEFOX_WITH_CAUSE = controller.getMethod("withCause", entityType, causeType, Runnable.class);
+                for (Object constant : causeType.getEnumConstants()) {
+                    if ("SCRIPTED_TRANSITION".equals(String.valueOf(constant))) {
+                        WINEFOX_SCRIPTED_CAUSE = constant;
+                        break;
+                    }
+                }
+            } catch (Throwable ignored) {
+                WINEFOX_WRITE = null;
+                WINEFOX_WITH_CAUSE = null;
+                WINEFOX_SCRIPTED_CAUSE = null;
+            }
+        }
+        if (WINEFOX_WRITE == null || WINEFOX_WITH_CAUSE == null || WINEFOX_SCRIPTED_CAUSE == null) {
+            return null;
+        }
+        return new ControllerChannel(WINEFOX_WRITE, WINEFOX_WITH_CAUSE, WINEFOX_SCRIPTED_CAUSE);
+    }
+
+    /** H 通道：把写入塞进 {@code withCause(boss, SCRIPTED_TRANSITION, () -> write(boss, v))}。 */
+    private static final class ControllerChannel implements HealthChannel {
+        private final java.lang.reflect.Method write;
+        private final java.lang.reflect.Method withCause;
+        private final Object scriptedCause;
+
+        ControllerChannel(java.lang.reflect.Method write, java.lang.reflect.Method withCause,
+                          Object scriptedCause) {
+            this.write = write;
+            this.withCause = withCause;
+            this.scriptedCause = scriptedCause;
+        }
+
+        @Override
+        public float read(LivingEntity entity) {
+            return entity.getHealth();
+        }
+
+        @Override
+        public void write(LivingEntity entity, float value) {
+            try {
+                Runnable action = () -> {
+                    try {
+                        write.invoke(null, entity, value);
+                    } catch (Throwable ignored) {
+                        // 写不进去就算了，外层还有每刻覆盖
+                    }
+                };
+                withCause.invoke(null, entity, scriptedCause, action);
+            } catch (Throwable ignored) {
+                // 同上
+            }
+        }
+    }
+
+    private static HealthChannel worldVariableChannel(LivingEntity target) {
+        if (!target.getClass().getName().startsWith("net.mcreator.witheria.entity.WitheriaEntity")) {
+            return null;
+        }
+        try {
+            Class<?> variables = Class.forName("net.mcreator.witheria.network.WitheriaModVariables$MapVariables");
+            java.lang.reflect.Method getter = null;
+            for (java.lang.reflect.Method method : variables.getDeclaredMethods()) {
+                if (!method.getName().equals("get") || method.getParameterCount() != 1
+                        || !java.lang.reflect.Modifier.isStatic(method.getModifiers())) {
+                    continue;
+                }
+                if (method.getParameterTypes()[0].isInstance(target.level())) {
+                    getter = method;
+                    break;
+                }
+            }
+            if (getter == null) {
+                return null;
+            }
+            getter.setAccessible(true);
+            Object map = getter.invoke(null, target.level());
+            if (map == null) {
+                return null;
+            }
+            List<Field> fields = new ArrayList<>();
+            float max = Math.max(1.0F, target.getMaxHealth());
+            for (Field field : map.getClass().getFields()) {
+                if (field.getType() != double.class && field.getType() != float.class) {
+                    continue;
+                }
+                String lower = field.getName().toLowerCase(java.util.Locale.ROOT);
+                if (!lower.contains("health") || lower.contains("max")) {
+                    continue;
+                }
+                double value = field.getType() == double.class ? field.getDouble(map) : field.getFloat(map);
+                if (value > 0.0D && value <= (double) max + 4.0D) {
+                    fields.add(field);
+                }
+            }
+            if (fields.isEmpty()) {
+                return null;
+            }
+            return new WorldVariableChannel(getter, fields);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** G 通道：读写世界变量里的那几个血量字段，并把改动同步出去。 */
+    private static final class WorldVariableChannel implements HealthChannel {
+        private final java.lang.reflect.Method getter;
+        private final List<Field> fields;
+        private net.minecraft.world.level.Level lastLevel;
+        private Vec3 lastPos;
+
+        WorldVariableChannel(java.lang.reflect.Method getter, List<Field> fields) {
+            this.getter = getter;
+            this.fields = fields;
+        }
+
+        @Nullable
+        private Object mapOf(net.minecraft.world.level.Level level) {
+            try {
+                return getter.invoke(null, level);
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+
+        @Override
+        public float read(LivingEntity entity) {
+            Object map = mapOf(entity.level());
+            if (map == null) {
+                return entity.getHealth();
+            }
+            try {
+                // True_Health 才是它自己校验用的那个，优先读它
+                for (Field field : fields) {
+                    if (field.getName().toLowerCase(java.util.Locale.ROOT).contains("true")) {
+                        return field.getType() == double.class ? (float) field.getDouble(map) : field.getFloat(map);
+                    }
+                }
+                Field field = fields.get(0);
+                return field.getType() == double.class ? (float) field.getDouble(map) : field.getFloat(map);
+            } catch (Throwable ignored) {
+                return entity.getHealth();
+            }
+        }
+
+        @Override
+        public void write(LivingEntity entity, float value) {
+            this.lastLevel = entity.level();
+            this.lastPos = entity.position();
+            Object map = mapOf(entity.level());
+            if (map == null) {
+                return;
+            }
+            float clamped = Math.max(0.0F, value);
+            try {
+                for (Field field : fields) {
+                    if (field.getType() == double.class) {
+                        field.setDouble(map, clamped);
+                    } else {
+                        field.setFloat(map, clamped);
+                    }
+                }
+                sync(map, entity.level());
+            } catch (Throwable ignored) {
+                // 同上
+            }
+        }
+
+        /**
+         * 接手结束：把世界变量和场上那一只对回同一个数。
+         *
+         * <p>Witheria 的 {@code AdditionalCheckProcedure} 会拿 {@code Witheria_True_Health}
+         * 跟实体血量比对，差 > 4 就判成篡改 —— 删掉这只再召唤一只新的。我们放手时如果不把
+         * 变量同步回去，新召唤的那只会立刻又对不上，于是无限循环。
+         */
+        void release(@Nullable LivingEntity entity) {
+            net.minecraft.world.level.Level level = entity != null ? entity.level() : this.lastLevel;
+            Vec3 pos = entity != null ? entity.position() : this.lastPos;
+            if (!(level instanceof ServerLevel) || pos == null) {
+                return;
+            }
+            Object map = mapOf(level);
+            if (map == null) {
+                return;
+            }
+            float health = 0.0F;
+            try {
+                Class<?> type = Class.forName("net.mcreator.witheria.entity.WitheriaEntity");
+                List<?> found = ((ServerLevel) level).getEntitiesOfClass((Class) type,
+                        new AABB(pos, pos).inflate(256.0D));
+                if (!found.isEmpty() && found.get(0) instanceof LivingEntity living && living.isAlive()) {
+                    health = living.getHealth();
+                }
+            } catch (Throwable ignored) {
+                // 拿不到就当它已经不在了
+            }
+            try {
+                for (Field field : fields) {
+                    if (field.getType() == double.class) {
+                        field.setDouble(map, health);
+                    } else {
+                        field.setFloat(map, health);
+                    }
+                }
+                if (health <= 0.0F) {
+                    for (Field field : map.getClass().getFields()) {
+                        if (field.getType() == boolean.class && "active".equalsIgnoreCase(field.getName())) {
+                            field.setBoolean(map, false);
+                        }
+                    }
+                }
+                sync(map, level);
+            } catch (Throwable ignored) {
+                // 同 release 的备注
+            }
+        }
+
+        private void sync(Object map, net.minecraft.world.level.Level level) {
+            try {
+                for (java.lang.reflect.Method method : map.getClass().getDeclaredMethods()) {
+                    if (method.getName().equals("syncData") && method.getParameterCount() == 1) {
+                        method.setAccessible(true);
+                        method.invoke(map, level);
+                        return;
+                    }
+                }
+            } catch (Throwable ignored) {
+                // 同步失败不影响主逻辑
+            }
+        }
+    }
+
+    private static final class FieldChannel implements HealthChannel {
+        private final Field field;
+
+        FieldChannel(Field field) {
+            this.field = field;
+        }
+
+        @Override
+        public float read(LivingEntity entity) {
+            try {
+                return field.getType() == float.class ? field.getFloat(entity) : (float) field.getDouble(entity);
+            } catch (Throwable ignored) {
+                return entity.getHealth();
+            }
+        }
+
+        @Override
+        public void write(LivingEntity entity, float value) {
+            try {
+                if (field.getType() == float.class) {
+                    field.setFloat(entity, value);
+                } else {
+                    field.setDouble(entity, value);
+                }
+            } catch (Throwable ignored) {
+                // 写不进去就交给每刻覆盖那一道
+            }
+        }
+    }
+
+    private static final class SyncPairChannel implements HealthChannel {
+        private final EntityDataAccessor<?> normal;
+        private final EntityDataAccessor<?> away;
+
+        SyncPairChannel(EntityDataAccessor<?> normal, EntityDataAccessor<?> away) {
+            this.normal = normal;
+            this.away = away;
+        }
+
+        @Override
+        public float read(LivingEntity entity) {
+            try {
+                Object n = entity.getEntityData().get(normal);
+                Object a = entity.getEntityData().get(away);
+                if (n instanceof Float fn && a instanceof Float fa) {
+                    return fn - fa;
+                }
+            } catch (Throwable ignored) {
+                // 落到下面
+            }
+            return entity.getHealth();
+        }
+
+        @Override
+        public void write(LivingEntity entity, float value) {
+            try {
+                Object n = entity.getEntityData().get(normal);
+                float normalValue = n instanceof Float fn ? fn : value;
+                float away = Math.max(0.0F, normalValue - value);
+                @SuppressWarnings("unchecked")
+                EntityDataAccessor<Float> accessor = (EntityDataAccessor<Float>) this.away;
+                entity.getEntityData().set(accessor, away);
+            } catch (Throwable ignored) {
+                // 同上
+            }
+        }
+    }
+
+    private static final class SyncStringChannel implements HealthChannel {
+        private final EntityDataAccessor<?> accessor;
+
+        SyncStringChannel(EntityDataAccessor<?> accessor) {
+            this.accessor = accessor;
+        }
+
+        @Override
+        public float read(LivingEntity entity) {
+            try {
+                Object raw = entity.getEntityData().get(accessor);
+                if (raw instanceof String text) {
+                    return Float.parseFloat(text.trim());
+                }
+            } catch (Throwable ignored) {
+                // 落到下面
+            }
+            return entity.getHealth();
+        }
+
+        @Override
+        public void write(LivingEntity entity, float value) {
+            try {
+                @SuppressWarnings("unchecked")
+                EntityDataAccessor<String> cast = (EntityDataAccessor<String>) this.accessor;
+                entity.getEntityData().set(cast, Float.toString(value));
+            } catch (Throwable ignored) {
+                // 同上
+            }
+        }
+    }
+
+    /** 类里所有 float / double、非静态的字段（按类缓存）。 */
+    private static List<Field> healthFields(Class<?> type) {
+        List<Field> cached = FLOAT_FIELDS.get(type);
+        if (cached != null) {
+            return cached;
+        }
+        List<Field> found = new ArrayList<>();
+        for (Class<?> c = type; c != null && c != Object.class; c = c.getSuperclass()) {
+            for (Field field : c.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                    continue;
+                }
+                if (field.getType() != float.class && field.getType() != double.class) {
+                    continue;
+                }
+                try {
+                    field.setAccessible(true);
+                    found.add(field);
+                } catch (Throwable ignored) {
+                    // 跳过
+                }
+            }
+        }
+        FLOAT_FIELDS.put(type, found);
+        return found;
+    }
+
+    /** 类（含父类）里所有同步数据访问器，按**当前值的实际类型**过滤。 */
+    private static List<EntityDataAccessor<?>> accessors(LivingEntity target, Class<?> valueType) {
+        List<EntityDataAccessor<?>> found = new ArrayList<>();
+        for (Class<?> c = target.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (Field field : c.getDeclaredFields()) {
+                if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                    continue;
+                }
+                if (!EntityDataAccessor.class.isAssignableFrom(field.getType())) {
+                    continue;
+                }
+                try {
+                    field.setAccessible(true);
+                    Object accessor = field.get(null);
+                    if (!(accessor instanceof EntityDataAccessor<?> data)) {
+                        continue;
+                    }
+                    Object value = target.getEntityData().get(data);
+                    if (valueType.isInstance(value)) {
+                        found.add(data);
+                    }
+                } catch (Throwable ignored) {
+                    // 跳过
+                }
+            }
+        }
+        return found;
+    }
+
+    /**
+     * 把血写进探测到的通道，并记下"应该是多少"。
+     */
+    private static void writeTrueHealth(LivingEntity target, float value) {
+        float wanted = Math.max(0.0F, value);
+        Seal seal = SEALED.get(target.getUUID());
+        if (seal == null) {
+            seal = new Seal(wanted, detectChannel(target));
+            SEALED.put(target.getUUID(), seal);
+            if (!seal.logged) {
+                seal.logged = true;
+                HatMod.LOGGER.info("[hatmod] 破防接管 {}：血量通道 = {}，当前 {}",
+                        target.getType(), seal.channel == null ? "未探测到（仅 setHealth）" : seal.channel.getClass().getSimpleName(),
+                        target.getHealth());
+            }
+        }
+        seal.hp = wanted;
+        if (seal.channel != null) {
+            seal.channel.write(target, wanted);
+        }
+        target.setHealth(wanted);
+    }
+
+    /**
+     * 每个服务器刻**最后**跑：把被接管目标的血量覆盖回我们记的值，并处理终局。
+     */
+    private static void tickSealedHealth(net.minecraft.server.MinecraftServer server) {
+        if (SEALED.isEmpty()) {
+            return;
+        }
+        Iterator<Map.Entry<UUID, Seal>> iterator = SEALED.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<UUID, Seal> entry = iterator.next();
+            Seal seal = entry.getValue();
+            LivingEntity target = findLiving(server, entry.getKey());
+            if (target == null || target.isRemoved() || !target.isAlive()) {
+                // 世界变量类的 Boss：接手结束前必须把变量跟场上那只对回去，
+                // 不然它的「血量被篡改」校验会判定成外挂，删掉再召唤，无限循环
+                if (seal.channel instanceof WorldVariableChannel world) {
+                    world.release(target);
+                }
+                iterator.remove();
+                continue;
+            }
+            float wanted = seal.hp;
+            if (Math.abs(target.getHealth() - wanted) > 0.01F) {
+                if (seal.channel != null) {
+                    seal.channel.write(target, wanted);
+                }
+                target.setHealth(wanted);
+            }
+            // 血量已经压到地板还判活着：先立刻试一次，之后每秒一次
+            float floor = Math.max(1.0F, target.getMaxHealth() * 0.05F);
+            if (seal.hp <= floor + 0.5F && seal.finishTries++ % 20 == 0 && finishAllowed(target)) {
+                finishOff(target);
+            }
+        }
+    }
+
+    /**
+     * 终局：先求一个**正常的死亡事件**，对方拒收才套永爱之刃那套硬杀。
+     *
+     * <p>逐档往下掉，能在前面停住就别走到后面：
+     * <ol>
+     *   <li>{@code hurt(genericKill, MAX)} —— 走完整伤害管线，能死就是正常死，
+     *       掉落、死亡消息、成就、Boss 条全对；</li>
+     *   <li>反射直接叫 {@code die()} —— 只拦 {@code hurt}、不拦 {@code die} 的 Boss
+     *       到这一档就死，同样带掉落和演出；</li>
+     *   <li>永爱式硬杀 —— 自己 roll 一次掉落，然后 {@code discard()} 把它从实体表里摘掉，
+     *       并把 UUID 拉黑一段时间；它的复活逻辑要是又把它塞回来，见到一次摘一次。</li>
+     * </ol>
+     */
+    static void finishOff(LivingEntity target) {
+        if (target instanceof Player) {
+            return;
+        }
+        // 秒杀门槛：先把理论上该打的伤害打满，才有资格走尾杀
+        if (!executionUnlocked(target)) {
+            return;
+        }
+        if (isUntouchable(target)) {
+            if (UNTOUCHABLE_LOGGED.add(target.getClass())) {
+                HatMod.LOGGER.warn("[hatmod] {} 把「被删除」当计数器用，破防的硬杀跳过它"
+                        + "（删了它也只会喂它自己的计数器，还得被它反噬）", target.getType());
+            }
+            return;
+        }
+        DamageSource source = target.damageSources().genericKill();
+        // 不留情面名单：破防的目标就是「让它消失」，不是「陪它打完这一场」。
+        // 它有 NPC 保护、有死亡守卫、有战败流程 —— 统统不问了，直接抹。
+        if (isNoMercy(target)) {
+            HatMod.LOGGER.warn("[hatmod] 破防：{} 在「不留情面」名单里，跳过死亡流程直接抹除", target.getType());
+            hardKill(target, source);
+            return;
+        }
+        // 一档 + 二档：先求一个正常的死亡事件 —— 只有它**真从实体表里没了**才算数
+        if (giveDeathEvent(target, source) && isReallyGone(target)) {
+            return;
+        }
+        // 打不过就加入：把它自己那套「离场 / 战败 / 结束」开关挨个试一遍。
+        // 注意：调到了不等于它真死了 —— 星之魔女的 setDead 就是个空壳，调用成功但什么也没发生。
+        if (tryBackdoors(target) && isReallyGone(target)) {
+            return;
+        }
+        // 更深一层：直接调用它自己的「退场程序」，把战斗状态变量清零。
+        // 不这么做的话，Witheria 的 CheckProcedure 会在下一 tick 就把它重新召唤出来。
+        if (endEncounter(target) && isReallyGone(target)) {
+            return;
+        }
+        // 有的 Boss 被删掉会自己重新召唤（Witheria），硬杀只会让它无限复活
+        if (isSelfSummoning(target)) {
+            if (UNTOUCHABLE_LOGGED.add(target.getClass())) {
+                HatMod.LOGGER.warn("[hatmod] {} 被删掉会自己重新召唤，破防跳过硬杀", target.getType());
+            }
+            return;
+        }
+        hardKill(target, source);
+    }
+
+    /**
+     * 破防的最后一档：不指望它配合，直接抹掉。
+     *
+     * <p>顺序是「先把权威血量清零 → 摘实体 → 从实体表抠掉 → 拉黑」：
+     * 血量清零是为了让它的每刻逻辑（回血、状态机、守护）看到 0，别再往回加；
+     * 剩下的交给 {@link #pig2Purge}。
+     */
+    private static void hardKill(LivingEntity target, DamageSource source) {
+        try {
+            HealthChannel channel = CHANNELS.get(target.getUUID());
+            if (channel == null) {
+                channel = detectChannel(target);
+                CHANNELS.put(target.getUUID(), channel);
+            }
+            if (channel != null && channel != VANILLA) {
+                channel.write(target, 0.0F);
+            }
+        } catch (Throwable ignored) {
+            // 清不掉就算了，后面照样摘实体
+        }
+        if (isAntiMod(target)) {
+            // 反模组实体（pig2 那种）：它自己会看调用栈，判断"这次是不是别的模组在动我"，
+            // 是就 return + 直接开战。所以一步 API 都不碰，只做它拦不了的三件事：
+            // 写 removalReason 字段、走实体管理器的 onRemove、给客户端发移除包。
+            forceRemove(target);
+            noteForceRemoval(target);
+            HatMod.LOGGER.warn("[hatmod] 破防硬杀 {}（{}）：反模组实体，已跳过全部 API 调用",
+                    target.getType(), target.getUUID());
+            return;
+        }
+        invokeSingle(target, "dropAllDeathLoot", "m_6668_", source);
+        target.setHealth(0.0F);
+        target.discard();
+        // 上面全是 API 层面。碰到把 hurt / setHealth / discard / remove 全写成空方法的实体
+        // （比如永爱之刃的「黑塔」），这三步一步都不会生效 —— 走下面两档真删除。
+        if (!isReallyGone(target)) {
+            eternalKill(target, source.getEntity());
+            if (!isReallyGone(target)) {
+                forceRemove(target);
+            }
+            // 这类实体的 mod 往往还会把它重新刷出来：记一笔，反复出现就按类型封禁
+            noteForceRemoval(target);
+        }
+        pig2Purge(target);
+        PURGED.put(target.getUUID(), new Purge());
+        HatMod.LOGGER.warn("[hatmod] 破防硬杀 {}（{}），已从实体表摘除（{}）",
+                target.getType(), target.getUUID(), isReallyGone(target) ? "已消失" : "仍在！");
+    }
+
+    /** 永爱之刃的工具类（可选依赖，反射调用；没装就返回 false）。 */
+    private static final String ETERNAL_UTILS = "com.wzz.forever_love_sword.util.ForeverUtils";
+    private static final String ETERNAL_API = "com.wzz.forever_love_sword.api.IForeverUtils";
+
+    /**
+     * 借「永爱之刃」自己的强制击杀。
+     *
+     * <p>它对「黑塔」这类实体的杀法不是走 {@code hurt} / {@code setHealth}，而是
+     * 反射写 {@code removalReason} 字段 + 换掉 {@code levelCallback} 把实体从实体表里摘掉 ——
+     * 所以它杀得动。这套我们不复刻，直接借它（同包环境里现成可用）。
+     *
+     * @return 调用成功（不代表目标已经消失，调用方还会再验一次）
+     */
+    private static boolean eternalKill(LivingEntity target, Entity killer) {
+        try {
+            Class<?> utils = Class.forName(ETERNAL_UTILS);
+            Object instance = utils.getMethod("getInstance").invoke(null);
+            if (instance == null) {
+                return false;
+            }
+            Method kill;
+            try {
+                kill = Class.forName(ETERNAL_API)
+                        .getMethod("killEntity", Entity.class, LivingEntity.class, boolean.class);
+            } catch (Throwable ignored) {
+                kill = instance.getClass()
+                        .getMethod("killEntity", Entity.class, LivingEntity.class, boolean.class);
+            }
+            kill.invoke(instance, target, killer, Boolean.TRUE);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * 在 {@code owner} 里按**类型**找字段。
+     *
+     * <p>不能按名字找：Forge 运行时 MC 类的字段是 SRG 名（{@code f_146795_} 之类），
+     * 拿 Mojang 名 {@code removalReason} / {@code levelCallback} 去 {@code getDeclaredField}
+     * 只会抛 {@code NoSuchFieldException} —— 之前强删一直「失败」、Teto 的守卫一直没装上，
+     * 都是这个原因。
+     */
+    @Nullable
+    static Field fieldOfType(Class<?> owner, Class<?> type) {
+        for (Class<?> c = owner; c != null && c != Object.class; c = c.getSuperclass()) {
+            for (Field field : c.getDeclaredFields()) {
+                if (field.getType() == type) {
+                    field.setAccessible(true);
+                    return field;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 自己动手的兜底：绕过实体自己的重写，从**区域实体管理器**那一层把它摘掉。
+     *
+     * <ol>
+     *   <li>反射把 {@code Entity.removalReason} 写成 KILLED —— 字段没有重写，一定写得进；</li>
+     *   <li>调用实体自己的 {@code EntityInLevelCallback#onRemove} —— 这是实体管理器挂在实体上的
+     *       包装类，它会把实体从 section 和追踪表里摘掉，同样不经过实体自己的方法。</li>
+     * </ol>
+     */
+    /** 给 Teto 用的公开入口：自己散场时如果 discard 没删干净，直接硬摘。 */
+    static void forceRemoveEntity(LivingEntity target) {
+        forceRemove(target);
+    }
+
+    private static void forceRemove(LivingEntity target) {
+        try {
+            Field reason = fieldOfType(Entity.class, RemovalReason.class);
+            if (reason == null) {
+                throw new IllegalStateException("找不到 removalReason 字段");
+            }
+            reason.set(target, RemovalReason.KILLED);
+            Field callback = fieldOfType(Entity.class,
+                    net.minecraft.world.level.entity.EntityInLevelCallback.class);
+            if (callback == null) {
+                throw new IllegalStateException("找不到 levelCallback 字段");
+            }
+            Object wrapper = callback.get(target);
+            if (wrapper instanceof EntityInLevelCallback inLevel) {
+                inLevel.onRemove(RemovalReason.KILLED);
+            }
+            // 客户端那边也要摘：服务端从实体表删了、客户端照旧在画，看上去就是"杀不死"。
+            // 永爱之刃专门为这件事准备了 ClientEntityRemovePacket，我们直接用原版的移除包。
+            if (target.level() instanceof ServerLevel serverLevel) {
+                serverLevel.getChunkSource().broadcastAndSend(target,
+                        new ClientboundRemoveEntitiesPacket(target.getId()));
+            }
+            HatMod.LOGGER.warn("[hatmod] 破防兜底：绕过重写强删 {}（{}）",
+                    target.getType(), target.getUUID());
+        } catch (Throwable error) {
+            HatMod.LOGGER.warn("[hatmod] 强删失败 {}：{}", target.getType(), error.toString());
+        }
+    }
+
+    /**
+     * 「不留情面」名单：这些目标在破防下直接抹除，不走任何它自己的流程。
+     *
+     * <p>星之魔女当 NPC 时 {@code m_6469_} 直接拒伤、{@code m_6667_} 被死亡守卫拦下、
+     * 血量控制器还要看战斗状态 —— 陪她走完这一场没有任何意义。
+     */
+    private static final String[] NO_MERCY = {
+            "com.github.yimeng261.maidspell.compat.irons_spellbooks.entity.winefox.MagicalWinefoxBossEntity",
+    };
+
+    /**
+     * 「专门反别的模组」的实体名单：对它们调用任何 API 都会被识别成"外模组动手"，
+     * 结果是调用被吞掉、还会反过来开战。这类只走纯字段级抹除。
+     *
+     * <p>pig2mod 的 {@code Pig2} 就是典型：{@code MyLib2.isCalledFromOtherModWithin5()}
+     * 扫调用栈，命中就在 {@code setRemoved / remove / setHealth} 里 {@code return} + {@code seeFighting()}，
+     * 而且它还会备份自己的 {@code levelCallback}，有人把回调换成 NULL 就还原回去。
+     */
+    private static final String[] ANTI_MOD = {
+            "kakiku.pig2mod.entity.Pig2",
+    };
+
+    private static boolean isAntiMod(Entity target) {
+        String name = target.getClass().getName();
+        for (String prefix : ANTI_MOD) {
+            if (name.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isNoMercy(Entity target) {
+        String name = target.getClass().getName();
+        for (String prefix : NO_MERCY) {
+            if (name.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 求一个**正常的死亡事件**：先走完整伤害管线，不行就把 {@code die()} 直接叫出来。
+     *
+     * <p>只拦 {@code hurt}、不拦 {@code die} 的 Boss 在这一步就死，掉落和演出照样有。
+     * 返回是否真的死了 —— 没死才轮到上游去考虑「硬杀」。
+     */
+    static boolean giveDeathEvent(LivingEntity target, DamageSource source) {
+        if (target instanceof Player) {
+            return false;
+        }
+        target.invulnerableTime = 0;
+        target.setInvulnerable(false);
+        // setHealth(0) 之后 hurt() 会被「已经死了」直接挡掉，先还一点点血再打
+        if (target.getHealth() <= 0.0F) {
+            float max = Math.max(1.0F, target.getMaxHealth());
+            target.setHealth(Math.min(1.0F, max * 0.01F));
+        }
+        // 一档：正常伤害管线
+        target.hurt(source, Math.max(100.0F, target.getMaxHealth() * 4.0F));
+        if (isTrulyDead(target)) {
+            endEncounter(target);
+            return true;
+        }
+        // 二档：不拦 hurt、只拦 setHealth 的那类，die() 叫出来照样走完整死亡流程
+        invokeSingle(target, "die", "m_6667_", source);
+        boolean dead = isTrulyDead(target);
+        if (dead) {
+            endEncounter(target);
+        }
+        return dead;
+    }
+
+    /**
+     * 虚影 / 铁托阵亡时的反噬 —— 照搬 pig2 那套：谁把我们的人打死，
+     * 就在它尸体被删除的前一秒（{@code deathTime == 19}）把对方从世界里抹掉。
+     *
+     * <p>只对「外人」生效：玩家、自己人、以及 pig2 这种删不得的一律放过。
+     */
+    /** 反噬清场的半径（格）与最多处理数量。 */
+    private static final double RETALIATE_RADIUS = 32.0D;
+    private static final int RETALIATE_MAX = 64;
+
+    static void retaliate(Entity self, @Nullable Entity killer) {
+        if (!HatSettings.forceBreak() || !(self.level() instanceof ServerLevel level)) {
+            return;
+        }
+        LivingEntity owner = null;
+        if (self instanceof OwnableEntity ownable) {
+            owner = ownable.getOwner();
+        }
+        if (killer instanceof LivingEntity target && canRetaliate(owner, target)) {
+            HatMod.LOGGER.warn("[hatmod] {} 反击：抹掉 {}", self.getType(), target.getType());
+            finishOff(target);
+        }
+        // pig2 L4「皆消え失せろ」：顺手把周围一圈外人一起抹掉
+        int wiped = 0;
+        AABB area = new AABB(self.blockPosition()).inflate(RETALIATE_RADIUS);
+        for (LivingEntity nearby : level.getEntitiesOfClass(LivingEntity.class, area)) {
+            if (wiped >= RETALIATE_MAX) {
+                break;
+            }
+            if (!canRetaliate(owner, nearby)) {
+                continue;
+            }
+            finishOff(nearby);
+            wiped++;
+        }
+        if (wiped > 0) {
+            HatMod.LOGGER.warn("[hatmod] {} 反击清场：抹掉 {} 个外来生物", self.getType(), wiped);
+        }
+    }
+
+    /** 这个目标能不能被反噬带走（玩家 / 自己人 / 玩家养的 / 删不得的一律放过）。 */
+    private static boolean canRetaliate(@Nullable LivingEntity owner, LivingEntity target) {
+        if (target instanceof Player || target instanceof HatSummon || target instanceof Teto) {
+            return false;
+        }
+        if (isUntouchable(target) || isSelfSummoning(target) || !target.isAlive()) {
+            return false;
+        }
+        if (owner != null && isFriendlyTo(owner, target)) {
+            return false;
+        }
+        return !(target instanceof OwnableEntity ownable) || !(ownable.getOwner() instanceof Player);
+    }
+
+    /** 常见「离场 / 战败 / 结束」开关（boolean 版）。 */
+    private static final String[] BACKDOOR_FLAGS = {
+            "setWantAway", "setWantReturn", "setWantLeave", "setRetreat", "setFlee",
+            "setEscaped", "setEscape", "setDefeated", "setDead", "setDeath",
+            "setKilled", "setEnding", "setFinished", "setVanished", "setBanished"
+    };
+
+    /** 常见「离场 / 战败 / 结束」开关（float 版，一般是血量镜像）。 */
+    private static final String[] BACKDOOR_VALUES = {"setExaltedAway", "setExaltedNormal"};
+
+    /**
+     * 「打不过就加入」：这些 Boss 都给自己留了正常的收场入口（离场、战败、结束），
+     * 与其硬拆，不如按常见命名挨个试一遍 —— 真被叫中了，它自己会走完演出和清理。
+     */
+    /**
+     * 「这一场已经打完了」的开关。
+     *
+     * <p>Witheria 的 {@code CheckProcedure} 挂在每个玩家的 {@code PlayerTickEvent.END} 上：
+     * 只要 {@code Witheria==1 && Difficulty==2 && Witheria_True_Health>4}，它一旦发现场上
+     * 512 格内没有 Witheria，就立刻在记录的坐标 {@code summon} 一只新的。也就是说光把实体
+     * 杀掉是没有意义的 —— 下一 tick 就复活，看起来就是无限复活。
+     *
+     * <p>作者自己留了正规出口：{@code DespawnProcedure.execute(world, entity)} 会把
+     * {@code Witheria / Witheria_Health / Witheria_True_Health / Difficulty / Damage_Interval /
+     * Second_Phase / Turrets} 全部清零再同步。走这条路，战斗是真的结束了。
+     *
+     * <p>表里每一行是「类名 / 方法名 / 参数形状 / 目标实体包名」，以后遇到别的模组
+     * 有同款退场入口，加一行就行。
+     */
+    private static final String[][] ENCOUNTER_END = {
+            {"net.mcreator.witheria.procedures.DespawnProcedure", "execute", "WE",
+                    "net.mcreator.witheria.entity.WitheriaEntity"},
+    };
+
+    /**
+     * 调用目标自己模组里的「退场程序」，把它的战斗状态清零。
+     *
+     * @return 是否真的调用到了一个
+     */
+    private static boolean endEncounter(LivingEntity target) {
+        if (!HatSettings.forceBreak() || target instanceof Player) {
+            return false;
+        }
+        String name = target.getClass().getName();
+        for (String[] hook : ENCOUNTER_END) {
+            if (!name.startsWith(hook[3])) {
+                continue;
+            }
+            try {
+                Class<?> type = Class.forName(hook[0]);
+                for (java.lang.reflect.Method method : type.getMethods()) {
+                    if (!method.getName().equals(hook[1])
+                            || !java.lang.reflect.Modifier.isStatic(method.getModifiers())) {
+                        continue;
+                    }
+                    Class<?>[] params = method.getParameterTypes();
+                    Object[] args;
+                    if ("WE".equals(hook[2]) && params.length == 2) {
+                        args = new Object[]{target.level(), target};
+                    } else if ("W".equals(hook[2]) && params.length == 1) {
+                        args = new Object[]{target.level()};
+                    } else {
+                        continue;
+                    }
+                    boolean matches = true;
+                    for (int i = 0; i < params.length; i++) {
+                        if (!params[i].isInstance(args[i])) {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if (!matches) {
+                        continue;
+                    }
+                    method.setAccessible(true);
+                    method.invoke(null, args);
+                    HatMod.LOGGER.warn("[hatmod] 破防收场：{} 已走它自己的退场程序 {}#{}"
+                                    + "（战斗状态变量清零，不会再被重新召唤）",
+                            target.getType(), type.getSimpleName(), method.getName());
+                    return true;
+                }
+            } catch (Throwable ignored) {
+                // 这个模组没装 / 版本对不上，下一个
+            }
+        }
+        return false;
+    }
+
+    /** 目标是不是真的没了：死了、被摘了、或者已经不存活。 */
+    /**
+     * 它是不是**真的**从世界里没了 —— 不看它自己的 dead / removed 标记，直接查实体表。
+     *
+     * <p>黑塔那类实体把 {@code remove()} 重写成空方法：{@code die()} 走完了、{@code dead}
+     * 标记也置上了，实体却还站在那儿。只看标记的话，尾杀会在「求死亡事件」那一档就以为
+     * 大功告成直接返回，一次硬杀都走不到。
+     */
+    private static boolean isReallyGone(LivingEntity target) {
+        if (target.isRemoved() && !(target.level() instanceof ServerLevel)) {
+            return true;
+        }
+        if (target.level() instanceof ServerLevel level) {
+            return level.getEntity(target.getId()) == null;
+        }
+        return target.isRemoved();
+    }
+
+    private static boolean deadOrGone(LivingEntity target) {
+        return isTrulyDead(target) || target.isRemoved() || !target.isAlive();
+    }
+
+    // ------------------------------------------------------------------
+    // 星之魔女的「开战」开关
+    // ------------------------------------------------------------------
+
+    private static java.lang.reflect.Method WINEFOX_BEGIN_ENCOUNTER;
+    private static java.lang.reflect.Method WINEFOX_READ_STATE;
+    private static Object WINEFOX_COMBAT_STATE;
+    private static boolean WINEFOX_STATE_PROBED;
+
+    /**
+     * 星之魔女坐在那儿当 NPC 的时候（{@code SEATED} / {@code CHALLENGE_START}），
+     * {@code m_6469_} 直接 {@code return false} —— 一点伤害都不接；
+     * 血量控制器那边也会把「不在 COMBAT」的外部写入整条丢掉。
+     *
+     * <p>所以破防想杀她，第一步得先用她自己的
+     * {@code maidspell$beginEncounter(WinefoxEncounterState.COMBAT)} 把这一场正式开起来。
+     * 开了之后 {@code isSeated()} 为假，伤害、死亡、掉落、DEFEATED 状态全部走正常流程。
+     */
+    private static void ensureFightable(LivingEntity target) {
+        if (!HatSettings.forceBreak() || !WINEFOX_ENTITY.equals(target.getClass().getName())) {
+            return;
+        }
+        if (!WINEFOX_STATE_PROBED) {
+            WINEFOX_STATE_PROBED = true;
+            try {
+                Class<?> entityType = Class.forName(WINEFOX_ENTITY);
+                Class<?> stateType = Class.forName(WINEFOX_ENTITY.replace("MagicalWinefoxBossEntity",
+                        "WinefoxEncounterState"));
+                WINEFOX_BEGIN_ENCOUNTER = entityType.getDeclaredMethod("maidspell$beginEncounter", stateType);
+                WINEFOX_BEGIN_ENCOUNTER.setAccessible(true);
+                WINEFOX_READ_STATE = entityType.getDeclaredMethod("maidspell$encounterState");
+                WINEFOX_READ_STATE.setAccessible(true);
+                for (Object constant : stateType.getEnumConstants()) {
+                    if ("COMBAT".equals(String.valueOf(constant))) {
+                        WINEFOX_COMBAT_STATE = constant;
+                        break;
+                    }
+                }
+            } catch (Throwable ignored) {
+                WINEFOX_BEGIN_ENCOUNTER = null;
+                WINEFOX_READ_STATE = null;
+                WINEFOX_COMBAT_STATE = null;
+            }
+        }
+        if (WINEFOX_BEGIN_ENCOUNTER == null || WINEFOX_READ_STATE == null || WINEFOX_COMBAT_STATE == null) {
+            return;
+        }
+        try {
+            String state = String.valueOf(WINEFOX_READ_STATE.invoke(target));
+            // 已经在打（COMBAT）、已经打完（DEFEATED）、正在退场（RETURNING）都不用管
+            if (!"SEATED".equals(state) && !"CHALLENGE_START".equals(state)) {
+                return;
+            }
+            if (Boolean.TRUE.equals(WINEFOX_BEGIN_ENCOUNTER.invoke(target, WINEFOX_COMBAT_STATE))) {
+                HatMod.LOGGER.warn("[hatmod] 破防把 {} 从 {} 拉进战斗（走它自己的 beginEncounter）",
+                        target.getType(), state);
+            }
+        } catch (Throwable ignored) {
+            // 拉不进来就按老路硬杀
+        }
+    }
+
+    private static boolean tryBackdoors(LivingEntity target) {
+        for (String name : BACKDOOR_FLAGS) {
+            if (callBackdoor(target, name, boolean.class, Boolean.TRUE)) {
+                return true;
+            }
+        }
+        for (String name : BACKDOOR_VALUES) {
+            if (callBackdoor(target, name, float.class, target.getMaxHealth())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 调一个后门方法；调完看看它是不是真的收场了（死了 / 被移除 / 血见底）。 */
+    private static boolean callBackdoor(LivingEntity target, String name, Class<?> param, Object value) {
+        for (Class<?> c = target.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            try {
+                java.lang.reflect.Method method = c.getDeclaredMethod(name, param);
+                method.setAccessible(true);
+                method.invoke(target, value);
+                HatMod.LOGGER.info("[hatmod] 已强制触发 {} 的后门 {}", target.getType(), name);
+                return isTrulyDead(target) || !target.isAlive() || target.getHealth() <= 0.01F;
+            } catch (NoSuchMethodException ignored) {
+                // 试父类
+            } catch (Throwable ignored) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /** 被删掉会自己重新召唤的那一类（Witheria）。 */
+    private static boolean isSelfSummoning(Entity target) {
+        return target.getClass().getName().startsWith("net.mcreator.witheria.entity.WitheriaEntity");
+    }
+
+    /** 真的死了吗。{@code dead} 字段最准 —— 有些 Boss 会把 {@code isRemoved()} 谎报成 false。 */
+    private static boolean isTrulyDead(LivingEntity target) {
+        if (target.isRemoved()) {
+            return true;
+        }
+        try {
+            Field dead = deadField(target.getClass());
+            if (dead != null) {
+                return dead.getBoolean(target);
+            }
+        } catch (Throwable ignored) {
+            // 读不到就退回 isAlive
+        }
+        return !target.isAlive();
+    }
+
+    /** {@code LivingEntity#dead}：按名字找，找不到再按 SRG 名找。 */
+    @Nullable
+    private static Field deadField(Class<?> type) {
+        for (Class<?> c = type; c != null && c != Object.class; c = c.getSuperclass()) {
+            for (String name : DEAD_NAMES) {
+                try {
+                    Field field = c.getDeclaredField(name);
+                    if (field.getType() == boolean.class) {
+                        field.setAccessible(true);
+                        return field;
+                    }
+                } catch (NoSuchFieldException ignored) {
+                    // 换下一个名字
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 调一个「单个参数、参数类型正好收得住 {@code arg}」的方法，名字给几个候选
+     * （开发环境是 Mojmap，1.20.1 生产环境是 SRG，两边都得认）。
+     */
+    private static void invokeSingle(LivingEntity target, String name, String srgName, Object arg) {
+        for (Class<?> c = target.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (java.lang.reflect.Method method : c.getDeclaredMethods()) {
+                if (method.getParameterCount() != 1) {
+                    continue;
+                }
+                if (!method.getName().equals(name) && !method.getName().equals(srgName)) {
+                    continue;
+                }
+                if (!method.getParameterTypes()[0].isInstance(arg)) {
+                    continue;
+                }
+                try {
+                    method.setAccessible(true);
+                    method.invoke(target, arg);
+                    return;
+                } catch (Throwable ignored) {
+                    // 换下一个
+                }
+            }
+        }
+    }
+
+    /**
+     * 碰不得的生物：这些包下的类不参与破防硬杀。
+     *
+     * <p>有的模组把「被删除」本身当计数器 —— pig2 每次被删都会往它自己的自杀表里塞一个 id，
+     * 塞到 50 次就调 {@code removeAllServerSide()} 把**其它模组的实体**一起抹掉，
+     * 60 次进 MAX_FIGHT 反复抹；而它被删后 200ms 内就会自己 {@code copy()} 出一只新的，
+     * 删了等于白删。这种目标只能走正常伤害，硬杀纯粹是在喂它。
+     */
+    private static final String[] UNTOUCHABLE_PACKAGES = {"kakiku.pig2mod."};
+    private static final String[] UNTOUCHABLE_NAMESPACES = {"pig2"};
+    private static final Set<Class<?>> UNTOUCHABLE_LOGGED = new HashSet<>();
+
+    /** 这个目标是不是「碰不得」的那一类（见 {@link #UNTOUCHABLE_PACKAGES}）。 */
+    private static boolean isUntouchable(Entity target) {
+        String name = target.getClass().getName();
+        for (String prefix : UNTOUCHABLE_PACKAGES) {
+            if (name.startsWith(prefix)) {
+                return true;
+            }
+        }
+        net.minecraft.resources.ResourceLocation id =
+                net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(target.getType());
+        if (id == null) {
+            return false;
+        }
+        for (String namespace : UNTOUCHABLE_NAMESPACES) {
+            if (namespace.equals(id.getNamespace())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 硬杀过、还在被复活逻辑往回塞的目标。 */
+    private static final Map<UUID, Purge> PURGED = new HashMap<>();
+    /** 拉黑时长：60 秒没再露头就结案。 */
+    private static final int PURGE_TICKS = 1200;
+    /** 最多陪它玩这么多次，再多就是纯复活循环，放手。 */
+    private static final int PURGE_MAX_TRIES = 600;
+    private static final String[] DEAD_NAMES = {"dead", "f_20890_"};
+
+    /** 一个被硬杀的目标：还剩多久结案、被摘掉了几次。 */
+    private static final class Purge {
+        int left = PURGE_TICKS;
+        int tries;
+        /** 「摘掉的是 Teto」这条日志已经打过几次。 */
+        int logged;
+    }
+
+    // ------------------------------------------------------------------
+    // 按类型封禁：删掉又被同一个 mod 重新刷出来的情况
+    // ------------------------------------------------------------------
+
+    /** 类名 -> 封禁记录。 */
+    private static final Map<String, Ban> BANNED_TYPES = new HashMap<>();
+    /** 同一个类在 {@link #BAN_WINDOW} 刻里被硬杀这么多次，就判定是"复活循环"。 */
+    private static final int BAN_AFTER_TRIES = 2;
+    /** 计数窗口（刻）：30 秒。 */
+    private static final int BAN_WINDOW = 600;
+    /** 封禁时长（刻）：120 秒 —— 只是压住这一阵，不会永久封死。 */
+    private static final int BAN_TICKS = 2400;
+
+    private static final class Ban {
+        long lastKillTick;
+        long untilTick;
+        int hits;
+        /** 拦截日志已经打过几次（别刷屏）。 */
+        int logged;
+    }
+
+    /** 硬杀成功删掉一次之后记一笔；短时间内反复被刷出来就升格成类型封禁。 */
+    private static void noteForceRemoval(LivingEntity target) {
+        long now = target.level().getGameTime();
+        Ban ban = BANNED_TYPES.computeIfAbsent(target.getClass().getName(), key -> new Ban());
+        if (now - ban.lastKillTick > BAN_WINDOW) {
+            ban.hits = 0;
+        }
+        ban.lastKillTick = now;
+        if (++ban.hits >= BAN_AFTER_TRIES && now > ban.untilTick) {
+            ban.untilTick = now + BAN_TICKS;
+            HatMod.LOGGER.warn("[hatmod] {} 删掉又回来，按类型封禁 {} 秒",
+                    target.getType(), BAN_TICKS / 20);
+        }
+    }
+
+    /** 封禁期内，同类型的实体一刷出来就摘掉。 */
+    private static void tickBans(net.minecraft.server.MinecraftServer server) {
+        if (BANNED_TYPES.isEmpty()) {
+            return;
+        }
+        long now = server.getTickCount();
+        BANNED_TYPES.entrySet().removeIf(entry -> now > entry.getValue().untilTick
+                && now - entry.getValue().lastKillTick > BAN_WINDOW);
+        if (BANNED_TYPES.isEmpty()) {
+            return;
+        }
+        for (ServerLevel level : server.getAllLevels()) {
+            // 先收名单再删：边遍历边摘会撞 ConcurrentModificationException
+            List<LivingEntity> victims = new ArrayList<>();
+            for (Entity entity : level.getAllEntities()) {
+                if (!(entity instanceof LivingEntity living) || living.isRemoved()
+                        || living instanceof Player || isUntouchable(living)) {
+                    continue;
+                }
+                Ban ban = BANNED_TYPES.get(living.getClass().getName());
+                if (ban != null && now <= ban.untilTick) {
+                    victims.add(living);
+                }
+            }
+            for (LivingEntity victim : victims) {
+                victim.setHealth(0.0F);
+                victim.discard();
+                if (!deadOrGone(victim)) {
+                    forceRemove(victim);
+                }
+            }
+        }
+    }
+
+    /**
+     * 每 5 刻扫一遍：硬杀过的目标只要又出现在世界里，就再摘一次，
+     * 直到它 60 秒没再露头（或者摆明车马地无限复活，作罢）。
+     */
+    private static void tickPurged(net.minecraft.server.MinecraftServer server) {
+        if (server.getTickCount() % 5 != 0) {
+            return;
+        }
+        tickBans(server);
+        if (PURGED.isEmpty()) {
+            return;
+        }
+        // 一次遍历建索引：名册里可能有上百条，逐个 findLiving 会把整个实体表扫上百遍
+        Map<UUID, LivingEntity> alive = new HashMap<>();
+        for (ServerLevel level : server.getAllLevels()) {
+            for (Entity entity : level.getAllEntities()) {
+                if (entity instanceof LivingEntity living && !living.isRemoved() && living.isAlive()) {
+                    alive.put(living.getUUID(), living);
+                }
+            }
+        }
+        Iterator<Map.Entry<UUID, Purge>> iterator = PURGED.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<UUID, Purge> entry = iterator.next();
+            Purge purge = entry.getValue();
+            LivingEntity target = alive.get(entry.getKey());
+            if (target != null) {
+                if (isUntouchable(target)) {
+                    iterator.remove();
+                    continue;
+                }
+                target.setHealth(0.0F);
+                target.discard();
+                // 有些实体把 setHealth / discard 都重写成空方法（黑塔就是），必须走真删除
+                if (!deadOrGone(target)) {
+                    forceRemove(target);
+                }
+                if (target instanceof Teto && purge.logged++ < 3) {
+                    HatMod.LOGGER.warn("[hatmod] 清算名册摘掉了一只 Teto（第 {} 次）—— "
+                            + "它进过死亡事件，所以会被反复摘", purge.logged);
+                }
+                // 又活过来了：记一笔 —— 同一个类短时间反复回来就升格成类型封禁
+                noteForceRemoval(target);
+                purge.left = PURGE_TICKS;
+                if (++purge.tries > PURGE_MAX_TRIES) {
+                    HatMod.LOGGER.warn("[hatmod] {} 反复复活，破防硬杀放弃（已摘 {} 次）",
+                            target.getType(), purge.tries);
+                    iterator.remove();
+                }
+                continue;
+            }
+            if (--purge.left <= 0) {
+                iterator.remove();
+            }
+        }
+    }
+
+    /**
+     * 封禁期内的类型**根本不让它进场**。
+     *
+     * <p>比每 5 刻扫一遍干净得多：实体连一个 tick 都跑不到，那些"进场即复活"的花招
+     * （pig2 那种 tick 里自己再 register 的）也就没机会表演。
+     */
+    @SubscribeEvent
+    public static void onEntityJoin(EntityJoinLevelEvent event) {
+        if (BANNED_TYPES.isEmpty() || !(event.getEntity() instanceof LivingEntity living)) {
+            return;
+        }
+        if (living instanceof Player || !(event.getLevel() instanceof ServerLevel level)) {
+            return;
+        }
+        Ban ban = BANNED_TYPES.get(living.getClass().getName());
+        if (ban == null || level.getGameTime() > ban.untilTick) {
+            return;
+        }
+        event.setCanceled(true);
+        if (ban.logged < 3) {
+            ban.logged++;
+            HatMod.LOGGER.warn("[hatmod] 封禁期内拦下 {} 的进场（第 {} 次）",
+                    living.getType(), ban.logged);
+        }
+    }
+
+    @Nullable
+    private static LivingEntity findLiving(net.minecraft.server.MinecraftServer server, UUID id) {
+        for (ServerLevel level : server.getAllLevels()) {
+            for (Entity entity : level.getAllEntities()) {
+                if (entity.getUUID().equals(id)) {
+                    return entity instanceof LivingEntity living ? living : null;
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -2495,17 +5164,54 @@ public final class HatAbilities {
             return 0.0F;
         }
 
-        float before = target.getHealth();
+        return damageBeamTick(level, wearer, type, source, poweredFlat,
+                HatSettings.healthDamageRatio(type) * power, true, target);
+    }
+
+    /**
+     * 光柱对**单个目标的一刻结算** —— 牛仔帽和脑蚀帽（Teto）共用这一份。
+     *
+     * <p>顺序：先按当前血量扣掉百分比（绕过减伤 / 伤害桶），再用 {@code hurt()} 结算固定伤害；
+     * 固定伤害被吃光就压一段最大生命补回来；最后记账给破防阶梯判「打不动」。
+     *
+     * @param flat        这一刻的固定伤害（已经乘过力量 / 帽子倍率）
+     * @param percentRatio 这一刻要扣掉的「当前生命比例」（已经乘过所有倍率；0 = 没有百分比）
+     * @param holdTarget  是否顺带把目标控住（脑蚀帽只控被这道光选中的那个）
+     */
+    static float damageBeamTick(ServerLevel level, LivingEntity wearer, HatType type, DamageSource source,
+                                float flat, float percentRatio, boolean holdTarget, LivingEntity target) {
+        if (target.isRemoved() || !target.isAlive() || !isEnemy(target, wearer)) {
+            return 0.0F;
+        }
+        // 这一击是我们打的，先记下「谁打的它」。
+        // 有些 Boss 的 hurt() 直接 return false（黑塔就是），LivingHurtEvent 根本不会抛，
+        // 而 HIT_BY / HIT_THIS_SECOND 只在那个监听里写 —— 少了这一句，这类目标永远没有
+        // 尾杀窗口（finishAllowed 拿不到出手者），ZERO_ROUNDS 也永远不涨。
+        noteHitByHat(target, wearer);
+        float before = hatmodGetHealth(target);
+        float ratio = Math.max(0.0F, Math.min(percentRatio, 1.0F));
 
         // 先按当前血量扣掉百分比那部分（绕过减伤），再用正常 hurt() 结算固定伤害收尾。
         // 顺序不能反：hurt() 有可能直接把目标打死，之后再 setHealth 会很难看。
-        applyPercentageDamage(wearer, target, type, power);
+        if (ratio > 0.0F) {
+            applyPercentageRatio(wearer, target, type, ratio);
+        }
 
         // 再结算固定伤害、冻结速度：否则 hurt() 内部施加的击退会残留在速度里。
         // 1.20.1 没有 bypasses_cooldown 伤害标签，改为把受击无敌帧清零，
         // 这样每刻的伤害都会真正结算。
-        target.invulnerableTime = 0;
-        target.hurt(source, poweredFlat);
+        // 破防阶梯 ①：拆成几段打，绕开「每击上限」
+        pierceHurt(target, source, flat);
+        // 破防阶梯 ③：常规伤害被吃光了（减伤 / 上限 / 无敌阶段），压一段最大生命补回来。
+        if (target.isAlive() && before - hatmodGetHealth(target) < flat * 0.25F) {
+            clampPierce(target, before * ratio);
+        }
+
+        // 记账：这一击**应该**打出多少、**实际**掉了多少（真血差值）。
+        // 每秒按「实际 / 应该」判定要不要破防 —— 血牛不会因为血厚被误判，因为它两边都吃满。
+        float intended = flat + before * ratio;
+        float dealt = Math.max(0.0F, before - hatmodGetHealth(target));
+        settleForce(target, dealt, intended);
 
         // 「身轻如燕」：白帽一次照射里用光柱击杀五个
         if (type == HatType.WHITE && before > 0.0F && target.isDeadOrDying()) {
@@ -2524,10 +5230,12 @@ public final class HatAbilities {
         wearer.setLastHurtMob(target);
 
         // 被罩住 = 彻底控住，连技能都放不出来
-        hold(level, target);
+        if (holdTarget) {
+            hold(level, target);
+        }
 
         // 这一击实际打掉了多少血（setHealth 与 hurt 都算在内），供吸血用。
-        return Math.max(0.0F, before - target.getHealth());
+        return Math.max(0.0F, before - hatmodGetHealth(target));
     }
 
     /**
@@ -2598,27 +5306,83 @@ public final class HatAbilities {
      * 每秒伤害上限」的伤害桶，常规伤害根本打不动。{@code setHealth} 不经过伤害结算，
      * 那些上限对它无效 —— 这就是「强制百分比伤害」。
      *
-     * <p>但 {@code setHealth} 只改血量、不触发死亡（{@code die()} 只在 {@code hurt()} 和
-     * 死亡事件里调）。所以目标血量掉到最大生命的
-     * {@link HatSettings#healthDamageFloor}（默认 5%）以下后就不再扣了，
-     * 把收尾让给同样在打的固定伤害，让它走正常的死亡流程。
+     * <p>{@code setHealth} 只改血量、不触发死亡（{@code die()} 只在 {@code hurt()} 和死亡事件里调）。
+     * 所以这里**没有地板、也没有每轮预算**：能扣多少扣多少，扣到 0 之后由
+     * {@link #giveDeathEvent} 补一个正经的死亡事件（掉落、死亡消息、成就都靠它）。
      */
+    /**
+     * 按**真实血量**扣掉 {@code amount}，并写回它真正托管的那一份。
+     *
+     * <p>脑蚀帽（Teto）的光柱用它：以前那边是 {@code setHealth(getHealth() - damage)}，
+     * 对 Witheria 这种把真血放进世界变量的 Boss 只是改了镜像，它自己的
+     * {@code DamageCapProcedure} 每刻再把镜像刷回去 —— 所以怎么打都不掉血。
+     * 这里和牛仔帽的百分比走同一条路：读真血、写真血通道。
+     */
+    static void drainTrueHealth(LivingEntity target, float amount, DamageSource source) {
+        float health = hatmodGetHealth(target);
+        if (health <= 0.0F || amount <= 0.0F || target.isRemoved()) {
+            return;
+        }
+        float want = Math.max(0.0F, health - amount);
+        HealthChannel channel = channelOf(target);
+        boolean custom = channel != null && channel != VANILLA;
+        if (custom) {
+            // 它的真血在别处（世界变量 / 健康控制器 / 自有字段）：直接写那份，别指望 setHealth
+            channel.write(target, want);
+        }
+        target.setHealth(want);
+        if (!custom && hatmodGetHealth(target) >= health - 0.01F) {
+            // 原版血量被减伤 / 伤害上限 / 无敌阶段吃掉了 —— 走一次正常伤害管线
+            target.invulnerableTime = 0;
+            target.hurt(source, amount);
+        }
+        if (!target.isRemoved() && hatmodGetHealth(target) <= 0.0F) {
+            giveDeathEvent(target, source);
+        }
+    }
+
     private static void applyPercentageDamage(LivingEntity wearer, LivingEntity target, HatType type, float power) {
-        if (target.isDeadOrDying()) {
+        applyPercentageRatio(wearer, target, type, HatSettings.healthDamageRatio(type) * power);
+    }
+
+    /** 百分比扣血的实现：比例由调用方给（牛仔帽按配置算，脑蚀帽按连击/涌动算）。 */
+    private static void applyPercentageRatio(LivingEntity wearer, LivingEntity target, HatType type, float ratioIn) {
+        if (target.isDeadOrDying() || !(wearer.level() instanceof ServerLevel level)) {
             return;
         }
-        float health = target.getHealth();
-        if (health < target.getMaxHealth() * HatSettings.healthDamageFloor(type)) {
+        ensureFightable(target);
+        if (target instanceof Player && !HatSettings.affectPlayers()) {
             return;
         }
-        // 不再设每轮预算：百分比打到 5% 地板为止（地板本身见上）。
-        // setHealth 内部会 clamp 到 [0, maxHealth]；力量倍率再高，这里也夹在 (0, health) 之间，安全。
-        float ratio = Math.min(HatSettings.healthDamageRatio(type) * power, 0.95F);
+        // 破防下这里读的是它**真正的**血量（hatmodGetHealth）；没开破防就是原版 getHealth()
+        float health = hatmodGetHealth(target);
+        if (health <= 0.0F) {
+            return;
+        }
+        // 倍率再高也只夹在 (0, health] 之间，不会把血扣成负数
+        float ratio = Math.min(ratioIn, 1.0F);
         float damage = health * ratio;
         if (damage <= 0.0F) {
             return;
         }
-        target.setHealth(health - damage);
+        DamageSource source = HatSettings.damageSource(level, wearer, type);
+        float want = Math.max(0.0F, health - damage);
+        HealthChannel channel = channelOf(target);
+        boolean custom = channel != null && channel != VANILLA;
+        if (custom) {
+            // 它的真血在别处（世界变量 / 健康控制器 / 自有字段）：直接写那份，别指望 setHealth
+            channel.write(target, want);
+        }
+        target.setHealth(want);
+        if (!custom && hatmodGetHealth(target) >= health - 0.01F) {
+            // 原版血量被减伤 / 伤害上限 / 无敌阶段吃掉了 —— 走一次正常伤害管线
+            target.invulnerableTime = 0;
+            target.hurt(source, damage);
+        }
+        // 打到 0：setHealth 不触发死亡，补一个正经的死亡事件
+        if (!target.isRemoved() && hatmodGetHealth(target) <= 0.0F) {
+            giveDeathEvent(target, source);
+        }
     }
 
     /**

@@ -54,19 +54,25 @@ public final class HatSettings {
      * <p>只增不减，纯粹用来让旧 config 失效；每一版具体改了什么不在这里逐个记，
      * 看 {@link HatType} 顶部那段「当前开火点 / 一轮总长」。
      */
-    public static final int CONFIG_VERSION = 7;
+    public static final int CONFIG_VERSION = 8;
 
     /** 光柱每刻额外造成「目标当前生命 × 这个比例」的伤害。 */
     public static final float DEFAULT_HEALTH_DAMAGE_RATIO = 0.05F;
-    /** 目标血量低于「最大生命 × 这个比例」后不再扣附加伤害（避免 setHealth 把目标压到 0 血不死）。 */
-    public static final float DEFAULT_HEALTH_DAMAGE_FLOOR = 0.05F;
+    /**
+     * 目标血量低于「最大生命 × 这个比例」后不再扣附加伤害。
+     *
+     * <p>出厂值是 <b>0</b>：不设地板，百分比伤害一路扣到 0，再由死亡事件收尾。
+     * 想要留一点余量（让固定伤害去收尾）可以自己在调参器里调大。
+     */
+    public static final float DEFAULT_HEALTH_DAMAGE_FLOOR = 0.0F;
     /** 默认伤害类型：本模组的自定义类型。 */
     public static final String DEFAULT_DAMAGE_TYPE = "hatmod:flash";
 
     /**
      * 「脑蚀」光柱每帧伤害的倍率（乘在黑帽那份 {@code damagePerTick} 上）。
      *
-     * <p>1.5 = 每道每刻 1.5 点伤害（0.75 颗心）。可以在调参器的「脑蚀」页改；
+     * <p>倍率，乘在黑帽的 {@code damagePerTick}（10）上 —— 1.5 = 每道每刻 15 点。
+     * 可以在调参器的「脑蚀」页改；
      * 老配置文件里没有这个字段时会自动落成这个出厂值（字段带初始化值，
      * 不需要为此加 {@link #CONFIG_VERSION}，也就不会把用户调好的其它数值冲掉）。
      */
@@ -79,6 +85,14 @@ public final class HatSettings {
      * 自己没在放的时候，只留**最后响起**的那一条。详见 {@code client.HatMusicPlayer}。
      */
     public static final boolean DEFAULT_OWN_BGM_PRIORITY = true;
+
+    /**
+     * 「破防模式」的出厂值：**关**。
+     *
+     * <p>关着的时候光柱完全走原来的链路（固定伤害 + 百分比 + 多段/压上限），
+     * 一点都不去动对方的血量；开着才会在一轮打不到「应该造成的伤害」的 50% 时强写血量。
+     */
+    public static final boolean DEFAULT_FORCE_BREAK = false;
 
     /**
      * 「全」三条路线（黑 / 白 / 红）各自的默认帧伤。
@@ -103,7 +117,12 @@ public final class HatSettings {
     public static final int MIN_TICKS = 0;
     public static final int MAX_TICKS = 72000;
     public static final float MIN_DAMAGE = 0.0F;
-    public static final float MAX_DAMAGE = 100000.0F;
+    /**
+     * 伤害上限。原来是 10 万，打 21 亿血的目标得打两万多下 —— 现在放到 21 亿
+     * （{@code Integer.MAX_VALUE} 那一档），一帧就能抹平原版/模组里任何一个血量条。
+     * 注意它只是**配置夹取**的范围，默认伤害值没动。
+     */
+    public static final float MAX_DAMAGE = 2100000000.0F;
     public static final float MAX_RATIO = 1.0F;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -115,6 +134,17 @@ public final class HatSettings {
 
     /** 全局开关「自己的 BGM 优先」的当前值（服务端权威）。 */
     private static boolean ownBgmPriority = DEFAULT_OWN_BGM_PRIORITY;
+    /** 「破防模式」当前值（服务端权威）。 */
+    private static boolean forceBreak = DEFAULT_FORCE_BREAK;
+    /** 「实体表接管」当前值（服务端权威）：被别人从实体管理器里挖走时，自己塞回去。 */
+    private static boolean entityLock;
+
+    /** 脑蚀 P 链路运行期间，范围内所有非友方单位都算敌人。 */
+    private static boolean brainrotLockAll = true;
+    /** 锁敌时把玩家也算进去。 */
+    private static boolean lockPlayers;
+    /** 对玩家真的造成伤害 / 挂效果。 */
+    private static boolean affectPlayers;
 
     /** 「全」三条路线的帧伤当前值（服务端权威）。 */
     private static float routeDamageBlack = DEFAULT_ROUTE_DAMAGE_BLACK;
@@ -149,6 +179,12 @@ public final class HatSettings {
          * <b>不需要为此把 {@link #CONFIG_VERSION} 加一</b>，也就不会把用户调好的时长冲掉。
          */
         public boolean ownBgmPriority = DEFAULT_OWN_BGM_PRIORITY;
+        /** 「破防模式」：老配置里没有这个字段时 Gson 会留成 false，正好就是出厂值。 */
+        public boolean forceBreak = DEFAULT_FORCE_BREAK;
+        public boolean entityLock;
+        public boolean brainrotLockAll = true;
+        public boolean lockPlayers;
+        public boolean affectPlayers;
 
         /**
          * 「全」三条路线各自的帧伤（出厂 12 / 10 / 15）。
@@ -388,6 +424,65 @@ public final class HatSettings {
         save();
     }
 
+    /** 「破防模式」开着没有（默认关）。 */
+    public static synchronized boolean forceBreak() {
+        ensureLoaded();
+        return forceBreak;
+    }
+
+    /** 改「破防模式」这个全局开关（调参器保存时一并生效）。 */
+    public static synchronized void setForceBreak(boolean value) {
+        ensureLoaded();
+        forceBreak = value;
+        save();
+    }
+
+    /**
+     * 「实体表接管」开着没有（默认关）。
+     *
+     * <p>开了之后，破防模式下被外部从实体管理器里挖走的虚影 / 铁托，会被按
+     * {@code PersistentEntitySectionManager} 的内部接口直接塞回去 —— 这是 pig2 那招，
+     * 也是唯一能扛住「改实体表」类删除的办法。代价是动了原版内部结构，所以默认关。
+     */
+    public static synchronized boolean brainrotLockAll() {
+        return brainrotLockAll;
+    }
+
+    public static synchronized void setBrainrotLockAll(boolean value) {
+        brainrotLockAll = value;
+        save();
+    }
+
+    public static synchronized boolean lockPlayers() {
+        return lockPlayers;
+    }
+
+    public static synchronized void setLockPlayers(boolean value) {
+        lockPlayers = value;
+        save();
+    }
+
+    public static synchronized boolean affectPlayers() {
+        return affectPlayers;
+    }
+
+    public static synchronized void setAffectPlayers(boolean value) {
+        affectPlayers = value;
+        save();
+    }
+
+    public static synchronized boolean entityLock() {
+        ensureLoaded();
+        return entityLock;
+    }
+
+    /** 改「实体表接管」（写进 {@code config/hatmod.json}）。 */
+    public static synchronized void setEntityLock(boolean value) {
+        ensureLoaded();
+        entityLock = value;
+        save();
+    }
+
     // ------------------------------------------------------------------
     // 调试开关（落盘，重启后还在）
     // ------------------------------------------------------------------
@@ -436,6 +531,11 @@ public final class HatSettings {
         }
         loaded = true;
         ownBgmPriority = DEFAULT_OWN_BGM_PRIORITY;
+        forceBreak = DEFAULT_FORCE_BREAK;
+        entityLock = false;
+        brainrotLockAll = true;
+        lockPlayers = false;
+        affectPlayers = false;
         routeDamageBlack = DEFAULT_ROUTE_DAMAGE_BLACK;
         routeDamageWhite = DEFAULT_ROUTE_DAMAGE_WHITE;
         routeDamageRed = DEFAULT_ROUTE_DAMAGE_RED;
@@ -458,11 +558,36 @@ public final class HatSettings {
             // 版本比当前旧（含根本没有 version 字段的老格式）-> 整份作废，用新默认值。
             // 这样每次调完默认数值都不需要让人手动去 config 目录删文件。
             if (fromDisk.version < CONFIG_VERSION) {
-                HatMod.LOGGER.info("[HatMod] config/hatmod.json 版本 {} 落后于 {}，已改用新的默认数值；"
-                        + "下一次在调参器里保存会写上新版本。", fromDisk.version, CONFIG_VERSION);
-                return;
+                if (fromDisk.version == CONFIG_VERSION - 1) {
+                    // v7 -> v8：上一版的牛仔帽帧伤被整体砍到了十分之一，这里乘回 10 倍。
+                    // 破防开关、蓄力/照射时长、强制路线这些设置原样保留，不整份重置。
+                    if (fromDisk.hats != null) {
+                        for (Entry stored : fromDisk.hats.values()) {
+                            if (stored != null) {
+                                stored.damagePerTick *= 10.0F;
+                            }
+                        }
+                    }
+                    // 路线帧伤如果还是旧的个位数尺度，也一起乘回 10 倍（已经是 12/10/15 的不动）
+                    if (fromDisk.routeDamageBlack > 0.0F && fromDisk.routeDamageBlack < 5.0F) {
+                        fromDisk.routeDamageBlack *= 10.0F;
+                        fromDisk.routeDamageWhite *= 10.0F;
+                        fromDisk.routeDamageRed *= 10.0F;
+                    }
+                    HatMod.LOGGER.info("[HatMod] config/hatmod.json 从版本 {} 升到 {}：帧伤乘回 10 倍，"
+                            + "其它设置保持原样。", fromDisk.version, CONFIG_VERSION);
+                } else {
+                    HatMod.LOGGER.info("[HatMod] config/hatmod.json 版本 {} 落后于 {}，已改用新的默认数值；"
+                            + "下一次在调参器里保存会写上新版本。", fromDisk.version, CONFIG_VERSION);
+                    return;
+                }
             }
             ownBgmPriority = fromDisk.ownBgmPriority;
+            forceBreak = fromDisk.forceBreak;
+            entityLock = fromDisk.entityLock;
+            brainrotLockAll = fromDisk.brainrotLockAll;
+            lockPlayers = fromDisk.lockPlayers;
+            affectPlayers = fromDisk.affectPlayers;
             routeDamageBlack = clamp(fromDisk.routeDamageBlack, MIN_DAMAGE, MAX_DAMAGE);
             routeDamageWhite = clamp(fromDisk.routeDamageWhite, MIN_DAMAGE, MAX_DAMAGE);
             routeDamageRed = clamp(fromDisk.routeDamageRed, MIN_DAMAGE, MAX_DAMAGE);
@@ -491,7 +616,9 @@ public final class HatSettings {
                 entry.flashTicks = stored.flashTicks;
                 entry.damagePerTick = stored.damagePerTick;
                 entry.healthDamageRatio = stored.healthDamageRatio;
-                entry.healthDamageFloor = stored.healthDamageFloor;
+                // 老配置里的 5% 是旧出厂值（那时这是个硬地板）；现在出厂值是 0，按新语义走
+                entry.healthDamageFloor = stored.healthDamageFloor == 0.05F
+                        ? DEFAULT_HEALTH_DAMAGE_FLOOR : stored.healthDamageFloor;
                 entry.damageType = stored.damageType;
                 entry.normalize(type);
             }
@@ -504,6 +631,11 @@ public final class HatSettings {
         ConfigFile out = new ConfigFile();
         out.version = CONFIG_VERSION;
         out.ownBgmPriority = ownBgmPriority;
+        out.forceBreak = forceBreak;
+        out.entityLock = entityLock;
+        out.brainrotLockAll = brainrotLockAll;
+        out.lockPlayers = lockPlayers;
+        out.affectPlayers = affectPlayers;
         out.routeDamageBlack = routeDamageBlack;
         out.routeDamageWhite = routeDamageWhite;
         out.routeDamageRed = routeDamageRed;

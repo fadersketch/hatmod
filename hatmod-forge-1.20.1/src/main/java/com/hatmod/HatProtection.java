@@ -47,7 +47,7 @@ public final class HatProtection {
         if (!HatAbilities.isWearingHat(event.getEntity())) {
             return;
         }
-        if (isProtected(target)) {
+        if (isProtected(target, event.getEntity())) {
             event.setCanceled(true);
         }
     }
@@ -132,5 +132,18 @@ public final class HatProtection {
             return false;
         }
         return true;
+    }
+
+    /**
+     * 带上「谁在打」的保护判定：**脑蚀帽 P 键强制起手的那一轮**不受保护限制。
+     *
+     * <p>牛仔帽按设定是好人，绝不碰被动 / 无害生物，所以这里只认脑蚀（Teto）那条链路；
+     * 而且只认 P 键强制起来的轮次 —— 正常起手保护照旧，免得帽子误杀村民和宠物。
+     */
+    public static boolean isProtected(LivingEntity target, LivingEntity attacker) {
+        if (attacker != null && BrainrotCycle.isForcedRound(attacker)) {
+            return false;
+        }
+        return isProtected(target);
     }
 }

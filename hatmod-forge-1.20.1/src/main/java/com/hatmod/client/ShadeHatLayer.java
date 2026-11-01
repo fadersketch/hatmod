@@ -14,15 +14,16 @@ import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.resources.ResourceLocation;
 
 /**
- * 给「虚影」戴一顶**假帽子**。
+ * 把虚影头上那顶**真帽子**（{@code HatSummon.init} 给的「全」）画出来。
  *
- * <p>只是把牛仔帽模型画在它头上 —— 虚影身上**没有**真正的帽子物品（有的话
- * {@code HatAbilities} 的状态机会把它当成戴帽者，它就会自己蓄力开火）。
+ * <p>虚影确实戴着帽子物品，但 {@code HatAbilities} 的状态机会跳过 {@code HatSummon}，
+ * 所以它不会自己蓄力开火 —— 这顶帽子只负责护甲和外观。
  * 画法照抄 {@link CurioHatRenderer}：把父模型「头」的姿态抄过来，在同一坐标空间里直接渲染。
  */
 public class ShadeHatLayer extends RenderLayer<HatSummon, PlayerModel<HatSummon>> {
 
-    private static final ResourceLocation TEXTURE = HatMod.id("textures/models/armor/all_hat_layer_1.png");
+    /** 当前这一帧要用的护甲贴图（按头上那顶帽子的颜色走）。 */
+    private ResourceLocation texture = HatMod.id("textures/models/armor/all_hat_layer_1.png");
 
     private CowboyHatModel model;
 
@@ -37,12 +38,20 @@ public class ShadeHatLayer extends RenderLayer<HatSummon, PlayerModel<HatSummon>
         if (entity.isInvisible()) {
             return;
         }
+        // 读它真正戴的那顶：帽子被取下/打碎之后这里自然什么都不画
+        net.minecraft.world.item.ItemStack worn =
+                entity.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.HEAD);
+        if (!com.hatmod.HatItems.isHat(worn)) {
+            return;
+        }
+        this.texture = HatMod.id("textures/models/armor/"
+                + com.hatmod.HatRouteState.textureName(com.hatmod.HatItems.typeOf(worn)) + "_layer_1.png");
         CowboyHatModel hat = model();
         // 这个模型是单独烘出来的，AgeableListModel.young 默认是 true —— 不关掉的话
         // renderToBuffer 会走「幼年生物」分支：整体缩到 0.75 再往下挪一格，帽子就掉到肚子上去了。
         hat.young = false;
         hat.head.copyFrom(getParentModel().head);
-        VertexConsumer consumer = buffer.getBuffer(RenderType.armorCutoutNoCull(TEXTURE));
+        VertexConsumer consumer = buffer.getBuffer(RenderType.armorCutoutNoCull(this.texture));
         hat.renderToBuffer(poseStack, consumer, packedLight, OverlayTexture.NO_OVERLAY,
                 1.0F, 1.0F, 1.0F, 1.0F);
     }

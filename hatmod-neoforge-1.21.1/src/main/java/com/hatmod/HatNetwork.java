@@ -251,13 +251,13 @@ public final class HatNetwork {
     /** 把当前参数发给一个玩家（登录时、以及改完参数后给编辑者回执）。 */
     public static void sendSettings(ServerPlayer player, int feedback) {
         PacketDistributor.sendToPlayer(player, new SettingsSyncPayload(snapshot(), HatSettings.ownBgmPriority(),
-                routeSnapshot(), HatSettings.brainrotDamageScale(), feedback));
+                HatSettings.forceBreak(), routeSnapshot(), HatSettings.brainrotDamageScale(), feedback));
     }
 
     /** 广播给所有人（feedback = 无提示）。 */
     public static void broadcastSettings() {
         PacketDistributor.sendToAllPlayers(new SettingsSyncPayload(snapshot(), HatSettings.ownBgmPriority(),
-                routeSnapshot(), HatSettings.brainrotDamageScale(), FEEDBACK_NONE));
+                HatSettings.forceBreak(), routeSnapshot(), HatSettings.brainrotDamageScale(), FEEDBACK_NONE));
     }
 
     /**
@@ -267,7 +267,7 @@ public final class HatNetwork {
     public static void sendSettingsUpdate(HatType type, int chargeTicks, int flashTicks,
                                           float damagePerTick, float healthDamageRatio,
                                           float healthDamageFloor, String damageType,
-                                          boolean ownBgmPriority,
+                                          boolean ownBgmPriority, boolean forceBreak,
                                           float routeBlack, float routeWhite, float routeRed,
                                           String forcedRoute, float brainrotDamageScale) {
         // 客户端也留一行日志：排查「点了保存没生效」时，先看日志里有没有这一行，
@@ -278,7 +278,7 @@ public final class HatNetwork {
                 ownBgmPriority, routeBlack, routeWhite, routeRed, forcedRoute, brainrotDamageScale);
         PacketDistributor.sendToServer(new SettingsUpdatePayload(type.ordinal(), chargeTicks, flashTicks,
                 damagePerTick, healthDamageRatio, healthDamageFloor, damageType,
-                ownBgmPriority, routeBlack, routeWhite, routeRed, forcedRoute, brainrotDamageScale));
+                ownBgmPriority, forceBreak, routeBlack, routeWhite, routeRed, forcedRoute, brainrotDamageScale));
     }
 
     /** 「全」路线相关的只读快照：三条帧伤 + 强制路线。 */
@@ -311,6 +311,13 @@ public final class HatNetwork {
                 payload.damageType());
         // 全局开关跟着一起落盘：这样「保存」一个按钮就把界面上看到的都生效了
         HatSettings.setOwnBgmPriority(payload.ownBgmPriority());
+        boolean wasForceBreak = HatSettings.forceBreak();
+        HatSettings.setForceBreak(payload.forceBreak());
+        if (payload.forceBreak() && !wasForceBreak) {
+            player.sendSystemMessage(net.minecraft.network.chat.Component
+                    .translatable("hatmod.forcebreak.warning")
+                    .withStyle(net.minecraft.ChatFormatting.RED));
+        }
         // 「全」的三条路线帧伤 + 强制路线，也在同一个「保存」里生效
         HatSettings.setRouteDamage(payload.routeBlack(), payload.routeWhite(), payload.routeRed());
         HatSettings.setForcedRoute(payload.forcedRoute());
@@ -500,7 +507,7 @@ public final class HatNetwork {
         }
     }
 
-    public record SettingsSyncPayload(List<Snapshot> snapshots, boolean ownBgmPriority,
+    public record SettingsSyncPayload(List<Snapshot> snapshots, boolean ownBgmPriority, boolean forceBreak,
                                       RouteSnapshot route, float brainrotDamageScale, int feedback)
             implements CustomPacketPayload {
 
@@ -518,6 +525,7 @@ public final class HatNetwork {
         private static void write(RegistryFriendlyByteBuf buf, SettingsSyncPayload payload) {
             buf.writeVarInt(payload.feedback());
             buf.writeBoolean(payload.ownBgmPriority());
+            buf.writeBoolean(payload.forceBreak());
             buf.writeFloat(payload.route().black());
             buf.writeFloat(payload.route().white());
             buf.writeFloat(payload.route().red());
@@ -538,6 +546,7 @@ public final class HatNetwork {
         private static SettingsSyncPayload read(RegistryFriendlyByteBuf buf) {
             int feedback = buf.readVarInt();
             boolean ownBgmPriority = buf.readBoolean();
+            boolean forceBreak = buf.readBoolean();
             RouteSnapshot route = new RouteSnapshot(buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf());
             float brainrotDamageScale = buf.readFloat();
             int size = buf.readVarInt();
@@ -546,7 +555,7 @@ public final class HatNetwork {
                 list.add(new Snapshot(buf.readVarInt(), buf.readVarInt(), buf.readVarInt(),
                         buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf()));
             }
-            return new SettingsSyncPayload(list, ownBgmPriority, route, brainrotDamageScale, feedback);
+            return new SettingsSyncPayload(list, ownBgmPriority, forceBreak, route, brainrotDamageScale, feedback);
         }
 
         @Override
@@ -559,7 +568,7 @@ public final class HatNetwork {
     public record SettingsUpdatePayload(int ordinal, int chargeTicks, int flashTicks,
                                         float damagePerTick, float healthDamageRatio,
                                         float healthDamageFloor, String damageType,
-                                        boolean ownBgmPriority,
+                                        boolean ownBgmPriority, boolean forceBreak,
                                         float routeBlack, float routeWhite, float routeRed,
                                         String forcedRoute, float brainrotDamageScale)
             implements CustomPacketPayload {
@@ -579,6 +588,7 @@ public final class HatNetwork {
             buf.writeFloat(payload.healthDamageFloor());
             buf.writeUtf(payload.damageType());
             buf.writeBoolean(payload.ownBgmPriority());
+            buf.writeBoolean(payload.forceBreak());
             buf.writeFloat(payload.routeBlack());
             buf.writeFloat(payload.routeWhite());
             buf.writeFloat(payload.routeRed());
@@ -589,8 +599,8 @@ public final class HatNetwork {
         private static SettingsUpdatePayload read(RegistryFriendlyByteBuf buf) {
             return new SettingsUpdatePayload(buf.readVarInt(), buf.readVarInt(), buf.readVarInt(),
                     buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf(),
-                    buf.readBoolean(), buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf(),
-                    buf.readFloat());
+                    buf.readBoolean(), buf.readBoolean(), buf.readFloat(), buf.readFloat(), buf.readFloat(),
+                    buf.readUtf(), buf.readFloat());
         }
 
         @Override

@@ -101,6 +101,10 @@ public class HatTunerScreen extends Screen {
     private boolean ownBgmPriority;
     private Button ownBgmButton;
 
+    /** 「破防模式」在界面上的待保存状态。 */
+    private boolean forceBreak;
+    private Button forceBreakButton;
+
     /** 「合成表」页开着没有。 */
     private boolean showRecipes;
     private Button recipeButton;
@@ -194,10 +198,18 @@ public class HatTunerScreen extends Screen {
         // 底部按钮
         int bottom = bottomY();
         // 只留「保存 / 恢复默认」两个：关界面按 Esc 就行，那个「完成」是多余的
+        // 底部三个按钮：保存 / 恢复默认 / 破防模式（默认关）。三只各 86 宽，
+        // 最小 GUI 缩放（320 宽）下也排得开
         addRenderableWidget(Button.builder(Component.translatable("hatmod.tuner.save"), button -> save())
-                .bounds(this.width / 2 - 106, bottom, 100, BUTTON_H).build());
+                .bounds(this.width / 2 - 132, bottom, 86, BUTTON_H).build());
         addRenderableWidget(Button.builder(Component.translatable("hatmod.tuner.reset"), button -> resetFields())
-                .bounds(this.width / 2 + 6, bottom, 100, BUTTON_H).build());
+                .bounds(this.width / 2 - 43, bottom, 86, BUTTON_H).build());
+        this.forceBreak = ClientHatSettings.forceBreak();
+        this.forceBreakButton = Button.builder(forceBreakLabel(), button -> {
+            this.forceBreak = !this.forceBreak;
+            button.setMessage(forceBreakLabel());
+        }).bounds(this.width / 2 + 46, bottom, 86, BUTTON_H).build();
+        addRenderableWidget(this.forceBreakButton);
 
         // 「合成表」：左上角一个开关，点开就把整条合成链画成工作台
         this.recipeButton = Button.builder(recipeLabel(), button -> {
@@ -257,6 +269,13 @@ public class HatTunerScreen extends Screen {
         return Component.translatable("hatmod.tuner.forcedRoute")
                 .append(Component.literal(": "))
                 .append(Component.translatable(valueKey));
+    }
+
+    /** 「破防模式」开关上的文字。 */
+    private Component forceBreakLabel() {
+        return Component.translatable("hatmod.tuner.forceBreak")
+                .append(Component.literal(": "))
+                .append(Component.translatable(this.forceBreak ? "hatmod.tuner.on" : "hatmod.tuner.off"));
     }
 
     /** 开关按钮上的文字：名字 + 当前（待保存的）状态。 */
@@ -440,7 +459,7 @@ public class HatTunerScreen extends Screen {
 
         String forced = this.forcedRoute == null ? HatSettings.ROUTE_RANDOM : this.forcedRoute;
         HatNetwork.sendSettingsUpdate(this.selected, chargeTicks, flashTicks,
-                damagePerTick, ratio, floor, damageType, this.ownBgmPriority,
+                damagePerTick, ratio, floor, damageType, this.ownBgmPriority, this.forceBreak,
                 routeBlack, routeWhite, routeRed, forced,
                 ClientHatSettings.brainrotDamageScale());
         // 本地立刻回显：界面上「当前值」马上就是刚填的这份，不用等服务端回包。
@@ -449,6 +468,7 @@ public class HatTunerScreen extends Screen {
         ClientHatSettings.set(this.selected, chargeTicks, flashTicks,
                 damagePerTick, ratio, floor, damageType);
         ClientHatSettings.setOwnBgmPriority(this.ownBgmPriority);
+        ClientHatSettings.setForceBreak(this.forceBreak);
         // 强制路线只在「全」页有意义，也只在那一页改
         ClientHatSettings.setRoute(routeBlack, routeWhite, routeRed,
                 this.selected == HatType.ALL ? forced : ClientHatSettings.forcedRoute());
@@ -472,9 +492,10 @@ public class HatTunerScreen extends Screen {
         ClientHatSettings.Snapshot snapshot = ClientHatSettings.get(this.selected);
         HatNetwork.sendSettingsUpdate(this.selected, snapshot.chargeTicks, snapshot.flashTicks,
                 snapshot.damagePerTick, snapshot.healthDamageRatio, snapshot.healthDamageFloor,
-                snapshot.damageType, this.ownBgmPriority,
+                snapshot.damageType, this.ownBgmPriority, this.forceBreak,
                 ClientHatSettings.routeDamage(HatType.BLACK), ClientHatSettings.routeDamage(HatType.WHITE),
                 ClientHatSettings.routeDamage(HatType.RED), ClientHatSettings.forcedRoute(), scale);
+        ClientHatSettings.setForceBreak(this.forceBreak);
         ClientHatSettings.setBrainrotDamageScale(scale);
         onClose();
     }

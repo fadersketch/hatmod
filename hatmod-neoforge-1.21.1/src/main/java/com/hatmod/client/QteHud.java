@@ -49,6 +49,27 @@ public final class QteHud {
     private static final int TRACK_HALF = 80;
     /** 每刻滑多少像素：拍距约 8.86 刻，2.5 像素/刻 ≈ 一拍 22 像素。 */
     private static final float PIXELS_PER_TICK = 2.5F;
+    /** 光束期的配色：平时灰条 + 红键，光束期整条换成紫系，一眼看出进了哪一段。 */
+    private static final int BEAM_BAR_RGB = 0x9B6BFF;
+    private static final int BEAM_KEY_RGB = 0xB9A0FF;
+    private static final int BEAM_KEY_HOT_RGB = 0xE6DBFF;
+    /** 光束期判定色：PERFECT 亮紫 / GOOD 淡紫（MISS 不跟着变，永远红）。 */
+    private static final int BEAM_PERFECT_RGB = 0xB15CFF;
+    private static final int BEAM_GOOD_RGB = 0xC7A3FF;
+
+    private static boolean beamNow() {
+        return BrainrotBeats.inBeam(BrainrotQteClient.age());
+    }
+
+    /** PERFECT 的颜色：平时金，光束期亮紫。 */
+    private static int perfectRgb() {
+        return beamNow() ? BEAM_PERFECT_RGB : 0xFFD700;
+    }
+
+    /** GOOD 的颜色：平时绿，光束期淡紫。 */
+    private static int goodRgb() {
+        return beamNow() ? BEAM_GOOD_RGB : 0x55FF55;
+    }
     /** 判定条变色 / 闪光用多久（刻）。 */
     private static final int RATING_TICKS = 10;
     /** 右侧判定字的完整寿命（刻）：满亮弹 6 刻（0.3s），再淡出 4 刻 —— 对应原版 0.25s + 0.2s。 */
@@ -302,14 +323,32 @@ public final class QteHud {
             reveal *= Math.max(0.0F, 1.0F - (age - BrainrotBeats.FINAL_DARK) / 100.0F);
         }
 
-        // ---------- 歌词：判定条上方一行，卡拉 OK 式（唱过的亮、没唱的暗，下面是下一句预告） ----------
-        drawLyrics(graphics, font, cx, y, age, lyricReveal);
+        // 「Nope / too / late」这一排字**从开始渲染到结束**（含淡出尾巴）整段：
+        // 记分表、判定条、歌词全部收起来 —— 这一段屏幕上只留这三个词，
+        // 有点像按下 F1 的那种"世界安静了"。词一消失，三样东西一起恢复。
+        int speechAt = speechAnchor(age);
+        boolean speechOnly = speechAt >= 0;
+        if (speechOnly) {
+            reveal = 0.0F;
+        }
 
-        int barRgb = 0x9FA6C8;
+        // ---------- 歌词：判定条上方一行，卡拉 OK 式（唱过的亮、没唱的暗，下面是下一句预告） ----------
+        // 「Nope / too / late」在场期间整行收起：这一段屏幕上只留那三个词。
+        if (speechAt < 0) {
+            drawLyrics(graphics, font, cx, y, age, lyricReveal);
+        }
+
+        // 光束期：谱面跑得更快，条和键一起换成冷色
+        boolean beamPhase = BrainrotBeats.inBeam(age);
+        float ppt = PIXELS_PER_TICK * BrainrotBeats.scrollFactor(age);
+        // 可见窗口跟着速度一起换算：轨道半宽固定，跑得快就只剩更少的刻能看见
+        int leadTicks = Math.round(TRACK_HALF / ppt);
+        int trailTicks = Math.round(20.0F / ppt);
+        int barRgb = beamPhase ? BEAM_BAR_RGB : 0x9FA6C8;
         int barBounce = 0;
         if (rating != 0 && since >= 0 && since <= 8) {
-            barRgb = rating == RATING_PERFECT ? 0xFFD700
-                    : rating == RATING_GOOD ? 0x55FF55 : 0xFF5555;
+            barRgb = rating == RATING_PERFECT ? perfectRgb()
+                    : rating == RATING_GOOD ? goodRgb() : 0xFF5555;
             if (rating != RATING_MISS) {
                 // 上半圈的正弦：起手最高、几刻内回位，像踩了一脚
                 float decay = 1.0F - since / 8.0F;
@@ -359,10 +398,10 @@ public final class QteHud {
             }
             int tick = BrainrotBeats.tickAt(i);
             int delta = tick - age;
-            if (delta < -8 || delta > 32) {
+            if (delta < -trailTicks || delta > leadTicks) {
                 continue;
             }
-            int x = cx + Math.round(delta * PIXELS_PER_TICK);
+            int x = cx + Math.round(delta * ppt);
             if (tick < keysFrom) {
                 // 示范键：**全透明**的影子键 —— 碰到判定线就消失，不穿过去（它只是示范，不算一拍）
                 if (delta < 0) {
@@ -380,7 +419,8 @@ public final class QteHud {
             if (delta >= 0) {
                 // 实体键：红色；快进判定窗时更亮更红
                 boolean hot = Math.abs(delta) <= 4;
-                rgb = hot ? 0xFF2020 : 0xD22C2C;
+                rgb = beamPhase ? (hot ? BEAM_KEY_HOT_RGB : BEAM_KEY_RGB)
+                        : (hot ? 0xFF2020 : 0xD22C2C);
                 bodyAlpha = revealAlpha;
             } else {
                 bodyAlpha = (int) (0xDD * (1.0F + delta / 8.0F) * reveal);
@@ -388,8 +428,8 @@ public final class QteHud {
                     continue;
                 }
                 rgb = judged
-                        ? (rating == RATING_PERFECT ? 0xFFD700
-                        : rating == RATING_GOOD ? 0x55FF55 : 0xFF5555)
+                        ? (rating == RATING_PERFECT ? perfectRgb()
+                        : rating == RATING_GOOD ? goodRgb() : 0xFF5555)
                         : 0xB03030;
             }
             // 「NOPE / too / late」那三个键画成纯白：它和词是同一件事（判定后的反馈色不变）
@@ -414,9 +454,9 @@ public final class QteHud {
         if (!keysOff) {
             int startDelta = BrainrotBeats.LEAD_HOLD_START - age;
             int endDelta = BrainrotBeats.SCORE_FROM - age;
-            if (startDelta <= 40 && endDelta >= -8) {
-                int sx = cx + Math.round(startDelta * PIXELS_PER_TICK);
-                int ex = cx + Math.round(endDelta * PIXELS_PER_TICK);
+            if (startDelta <= leadTicks * 5 / 4 && endDelta >= -trailTicks) {
+                int sx = cx + Math.round(startDelta * ppt);
+                int ex = cx + Math.round(endDelta * ppt);
                 int left = Math.min(sx, ex);
                 int right = Math.max(sx, ex);
                 // 和示范键同一套色：透明白，别一个紫一个白
@@ -434,16 +474,17 @@ public final class QteHud {
                 int holdEnd = BrainrotBeats.holdEnd(h);
                 int headDelta = headTick - age;
                 int tailDelta = holdEnd - age;
-                if (headDelta > 40 || tailDelta < -8) {
+                if (headDelta > leadTicks * 5 / 4 || tailDelta < -trailTicks) {
                     continue;
                 }
-                int hx = cx + Math.round(headDelta * PIXELS_PER_TICK);
-                int tx = cx + Math.round(tailDelta * PIXELS_PER_TICK);
+                int hx = cx + Math.round(headDelta * ppt);
+                int tx = cx + Math.round(tailDelta * ppt);
                 int left = Math.min(hx, tx);
                 int right = Math.max(hx, tx);
                 boolean holding = age >= headTick && age < holdEnd
                         && BrainrotQteClient.combo() > 0;
-                int rgb = holding ? 0xFF2020 : 0xB02A2A;
+                int rgb = beamPhase ? (holding ? BEAM_KEY_HOT_RGB : BEAM_KEY_RGB)
+                        : (holding ? 0xFF2020 : 0xB02A2A);
                 graphics.fill(left, barY - 4, right, barY + 5, fade(0x44, reveal) | rgb);
                 graphics.fill(left, barY - 1, right, barY + 2, fade(0xCC, reveal) | rgb);
                 // 头部亮点（就踩在它上面起手）
@@ -461,8 +502,9 @@ public final class QteHud {
             lines.add(Component.translatable("hatmod.qte.reward.title"));
             lines.add(Component.translatable("hatmod.qte.reward.dodge",
                     BrainrotQteClient.dodges()));
+            // 不封顶：连击打得高就该显示多少，999% 那种上限会让人以为「打满了」
             lines.add(Component.translatable("hatmod.qte.reward.bonus",
-                    Math.min(999, BrainrotQteClient.combo() * 2)));
+                    BrainrotQteClient.combo() * 2));
             int shown = 0;
             for (var effect : minecraft.player.getActiveEffects()) {
                 if (shown >= 3) {
@@ -502,8 +544,8 @@ public final class QteHud {
         // ---------- 判定线：菱形 + 外圈光晕 ----------
         int lineRgb = 0xFFFFFF;
         if (rating != 0 && since >= 0 && since <= 8) {
-            lineRgb = rating == RATING_PERFECT ? 0xFFD700
-                    : rating == RATING_GOOD ? 0x55FF55 : 0xFF5555;
+            lineRgb = rating == RATING_PERFECT ? perfectRgb()
+                    : rating == RATING_GOOD ? goodRgb() : 0xFF5555;
         }
         // 由外到内三层：光晕 → 半透 → 实心菱形
         graphics.fill(cx - 5, barY - 2, cx + 5, barY + 3, fade(0x33, reveal) | 0x101018);
@@ -513,10 +555,10 @@ public final class QteHud {
 
         // ---------- 整屏反馈 ----------
         if (rating == RATING_PERFECT && since >= 0 && since <= 10) {
-            flashEdges(graphics, (int) (80 * (1.0F - since / 10.0F)), 0xFFD700);
+            flashEdges(graphics, (int) (80 * (1.0F - since / 10.0F)), perfectRgb());
         }
         if (rating == RATING_GOOD && since >= 0 && since <= 8) {
-            flashEdges(graphics, (int) (45 * (1.0F - since / 8.0F)), 0x55FF55);
+            flashEdges(graphics, (int) (45 * (1.0F - since / 8.0F)), goodRgb());
         }
         if (rating == RATING_MISS && since >= 0 && since <= 10) {
             flashEdges(graphics, (int) (70 * (1.0F - since / 10.0F)), 0xFF3030);
@@ -535,7 +577,7 @@ public final class QteHud {
         // 换成刻（20 刻/秒）：v0 = -8 px/刻、a = 1.375 px/刻²，
         //   位移 rise = -8t + 0.6875t²（6 刻到顶 ≈ -23px，之后自己落回来）。
         // 每一条独立排队：连打时几个字先后弹上去、各淡各的，新判定不会顶掉旧的。
-        for (int p = 0; p < BrainrotQteClient.popupCount(); p++) {
+        for (int p = 0; !speechOnly && p < BrainrotQteClient.popupCount(); p++) {
             int popupRating = BrainrotQteClient.popupRating(p);
             int popupSince = age - BrainrotQteClient.popupTick(p);
             if (popupRating == 0 || popupSince < 0 || popupSince > RATING_POP_TICKS) {
@@ -555,8 +597,8 @@ public final class QteHud {
                             popupRating == RATING_PERFECT ? "PERFECT"
                                     : popupRating == RATING_GOOD ? "GOOD" : "MISS")
                     .withStyle(ChatFormatting.BOLD);
-            int color = popupRating == RATING_PERFECT ? 0xFFD700
-                    : popupRating == RATING_GOOD ? 0x55FF55 : 0xFF5555;
+            int color = popupRating == RATING_PERFECT ? perfectRgb()
+                    : popupRating == RATING_GOOD ? goodRgb() : 0xFF5555;
             var pose = graphics.pose();
             pose.pushPose();
             // 右起四分之一屏（≈ 0.75 屏宽）：够靠右，但整串字不会顶出屏幕
@@ -751,20 +793,22 @@ public final class QteHud {
         return cut;
     }
 
-    /** 「Nope / too / late」这一排里，哪些词已经按中；以及当前是哪一句（换句就清空）。 */
-    private static final boolean[] SPEECH_LIT = new boolean[3];
-    private static int SPEECH_PHRASE = Integer.MIN_VALUE;
-    /** 上一轮音乐：换轮了就把点亮记录清掉（两轮的 260 / 1398 刻是同一个数）。 */
-    private static int SPEECH_EPOCH = Integer.MIN_VALUE;
+    /**
+     * 这一刻是不是处在「Nope / too / late」那一排字的显示窗口里；在的话返回这一句的锚点刻
+     * （第一个词那一刻），不在返回 -1。窗口和 {@link #drawSpeechRow} 用的是同一套。
+     */
+    private static int speechAnchor(int age) {
+        return BrainrotBeats.speechAnchor(age);
+    }
 
     /**
      * 「Nope / too / late」—— **一排大字**，三个词从头就在，按中哪个哪个亮。
      *
-     * <p>不是「弹一个删一个」：三个词始终占着三个位置，没按到的是暗影（告诉你这一排
-     * 有三个词、各在哪儿），按中的变成白亮大字；三个全中就整排转金色并多一条亮线，
-     * 这时候屏幕上是一整排「Nope too late」。
+     * <p>这三拍已经由服务端代按（见 {@code BrainrotQte#autoTapSpeech}），玩家不需要做任何事，
+     * 所以这里不再是「暗影 + 按中变白」那套交互显示，就是一句一句打出来的白字幕：
+     * 「Nope」→「too」→「late」，各自带 3 刻淡入，位置固定不跳。
      *
-     * @param hitSlot 这一帧刚按中的是第几个（-1 = 没有）
+     * @param hitSlot 保留参数（已经没有交互判定了，调用方还传着）
      */
     private static void drawSpeechRow(GuiGraphics graphics, Font font, int cx, int y,
                                       int age, int hitSlot) {
@@ -772,67 +816,50 @@ public final class QteHud {
         int second = BrainrotBeats.NO_TOO_LATE_SECOND;
         int anchor = Math.abs(age - second) <= Math.abs(age - first) ? second : first;
         int last = anchor + BrainrotBeats.SPEECH_STEP * (BrainrotBeats.SPEECH_WORDS.length - 1);
-        // 提前几刻把暗影放出来，给玩家反应时间；最后再多挂一会儿收尾
         if (age < anchor - 8 || age > last + 26) {
             return;
         }
-        if (anchor != SPEECH_PHRASE || BrainrotQteClient.epoch() != SPEECH_EPOCH) {
-            SPEECH_PHRASE = anchor;
-            SPEECH_EPOCH = BrainrotQteClient.epoch();
-            java.util.Arrays.fill(SPEECH_LIT, false);
-        }
-        if (hitSlot >= 0 && hitSlot < SPEECH_LIT.length) {
-            SPEECH_LIT[hitSlot] = true;
-        }
-        boolean all = true;
-        for (boolean lit : SPEECH_LIT) {
-            all &= lit;
-        }
-
-        // 大字：整排按 2 倍放大，位置以歌词那一行和判定条之间为准
+        // 正常字号的 2 倍，后面再压一层黑底
         final float scale = 2.0F;
-        final int gap = 12;
+        final int gap = 8;
         int total = -gap;
         for (String word : BrainrotBeats.SPEECH_WORDS) {
             total += Math.round(font.width(word) * scale) + gap;
         }
-        float rowY = y - 78.0F;
-        int left = Math.round(cx - total / 2.0F);
-        int top = Math.round(rowY - font.lineHeight);
-
-        // 底板 + 上下描边：字压得住任何背景（这是「亮眼」的一半）
-        graphics.fill(left - 10, top - 6, left + total + 10, top + font.lineHeight * 2 + 8,
-                ((all ? 0x78 : 0x5A) << 24) | 0x06060B);
-        int edge = all ? 0xFFD700 : 0x9AA3B8;
-        graphics.fill(left - 10, top - 6, left + total + 10, top - 5,
-                ((all ? 0xCC : 0x88) << 24) | edge);
-
-        float x = left;
+        // 摆在**判定条那一行**（{@code y}）：这一段条本来是藏起来的，位置正好空出来。
+        float rowY = y;
+        float x = Math.round(cx - total / 2.0F);
+        // 黑底：跟第一个词一起淡入，整条把三个词托住（2 倍字号压在画面上才看得清）
+        float appearAll = Math.min(1.0F, Math.max(0.0F, (age - anchor) / 3.0F));
+        if (appearAll > 0.0F) {
+            int bgAlpha = Math.round(255 * appearAll);
+            int padX = Math.round(7 * scale);
+            int padY = Math.round(4 * scale);
+            int halfHeight = Math.round(font.lineHeight * scale / 2.0F);
+            graphics.fill(Math.round(x) - padX, Math.round(rowY) - halfHeight - padY,
+                    Math.round(x) + total + padX, Math.round(rowY) + halfHeight + padY,
+                    bgAlpha << 24);
+        }
         for (int i = 0; i < BrainrotBeats.SPEECH_WORDS.length; i++) {
             String word = BrainrotBeats.SPEECH_WORDS[i];
             int wPix = Math.round(font.width(word) * scale);
-            boolean lit = SPEECH_LIT[i];
-            // 该按的那一个：这一刻正好到它，放大一点、亮一截 —— 告诉玩家「就现在」
             int tick = anchor + i * BrainrotBeats.SPEECH_STEP;
-            boolean due = !lit && Math.abs(age - tick) <= 3;
-            // 没按中：暗但看得清；按中：纯白；三个全中：整排转金
-            int alpha = lit ? 0xFF : due ? 0xE0 : 0x6A;
-            int color = lit ? (all ? 0xFFE066 : 0xFFFFFF) : due ? 0xD8DEEA : 0x8E96AC;
-            float wordScale = due ? scale * 1.18F : scale;
+            // 这三拍已经由服务端代按，玩家什么都不用做 —— 就是从左往右一行行打字幕。
+            // 还没轮到它的词一个字都不画；位置照占，后面的词不会往左跳。
+            if (age < tick) {
+                x += wPix + gap;
+                continue;
+            }
+            float appear = Math.min(1.0F, (age - tick) / 3.0F);
+            int alpha = Math.max(0, Math.round(255 * appear));
             var pose = graphics.pose();
             pose.pushPose();
             pose.translate(x + wPix / 2.0F, rowY, 0.0F);
-            pose.scale(wordScale, wordScale, 1.0F);
+            pose.scale(scale, scale, 1.0F);
             graphics.drawString(font, word, -font.width(word) / 2, -font.lineHeight / 2,
-                    (alpha << 24) | color, true);
+                    (alpha << 24) | 0xFFFFFF, true);
             pose.popPose();
             x += wPix + gap;
-        }
-        // 三个全中：底下再补一条亮线，整排收口
-        if (all) {
-            graphics.fill(left - 4, top + font.lineHeight * 2 + 2,
-                    left + total + 4, top + font.lineHeight * 2 + 4,
-                    0xCCFFD700);
         }
     }
 
