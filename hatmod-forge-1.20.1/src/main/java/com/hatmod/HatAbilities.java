@@ -1066,7 +1066,15 @@ public final class HatAbilities {
     private static void noteHatSwap(ServerPlayer player) {
         HatType now = HatItems.typeOf(hatStack(player));
         UUID id = player.getUUID();
-        HatType before = LAST_HAT_TYPE.put(id, now);
+        // ConcurrentHashMap 不收 null 值：没戴帽子（now == null）时删登记，
+        // 「上一次戴的帽子」语义不变（get 回来同样是 null）。以前这里直接 put(null)
+        // 会在玩家上线后的第一刻把服务器崩掉（1.4.0 实机崩溃根因）。
+        HatType before = LAST_HAT_TYPE.get(id);
+        if (now == null) {
+            LAST_HAT_TYPE.remove(id);
+        } else {
+            LAST_HAT_TYPE.put(id, now);
+        }
         boolean first = HAT_SEEN.add(id);
         if (first || now == null || before == now) {
             return;
@@ -1219,6 +1227,10 @@ public final class HatAbilities {
      */
     private static void guardGameMode(ServerPlayer player) {
         GameType mode = player.gameMode.getGameModeForPlayer();
+        if (mode == null) {
+            // 掉线 / 配置阶段可能短暂读不到模式：没有可比的东西，这一帧直接跳过。
+            return;
+        }
         GameType last = LAST_GAME_MODE.get(player.getUUID());
         boolean deathish = player.getHealth() <= 0.0F || Float.isNaN(player.getHealth())
                 || player.deathTime > 0 || player.isDeadOrDying() || player.isRemoved();
@@ -4470,7 +4482,11 @@ public final class HatAbilities {
                 CHANNELS.clear();
             }
             channel = detectChannel(target);
-            CHANNELS.put(target.getUUID(), channel);
+            if (channel != null) {
+                // detectChannel 允许返回 null（探不到通道的怪）：不登记。
+                // ConcurrentHashMap 不收 null 值，每刻重探也比崩服便宜。
+                CHANNELS.put(target.getUUID(), channel);
+            }
         }
         return channel;
     }
