@@ -149,6 +149,10 @@ public final class BeamRenderer {
      * 这样帽子变色时光柱也跟着变（客户端记的路线见 {@link HatRouteState}）。
      */
     private static float[] beamTintFor(LivingEntity living) {
+        // 唐嘉琦没有帽子：它的光柱是「黑帽同款」，颜色也直接按黑帽那份给
+        if (living instanceof com.hatmod.TangJiaqi) {
+            return TINT_BLACK;
+        }
         net.minecraft.world.item.ItemStack hat = HatAbilities.hatStack(living);
         // 「脑蚀」不是 HatType 里的任何一顶（它走自己的时间线），单独给它一个紫色
         if (hat.is(com.hatmod.HatItems.BRAIN_HAT.get())) {
@@ -222,7 +226,7 @@ public final class BeamRenderer {
 
             for (int i = 0; i < beams; i++) {
                 int targetId = i < targetIds.length ? targetIds[i] : -1;
-                Vec3 aim = beamDirection(mc, living, targetId, partialTick);
+                Vec3 aim = beamDirection(mc, living, targetId, partialTick, i);
                 if (aim.lengthSqr() < 1.0E-6D) {
                     continue;
                 }
@@ -231,7 +235,7 @@ public final class BeamRenderer {
 
                 // 起点在胯部；第一人称下再往前挪一小段，别让锥体近端插进身体
                 double forward = living == mc.player ? FIRST_PERSON_FORWARD : 0.0D;
-                Vec3 origin = HatAbilities.beamOrigin(living, partialTick)
+                Vec3 origin = HatAbilities.beamOrigin(living, partialTick, i)
                         .add(dir.scale(forward))
                         .subtract(cam);
 
@@ -453,8 +457,9 @@ public final class BeamRenderer {
      *
      * @param targetId 这道光柱锁定的实体 id；-1 表示没有目标（沿视线）
      */
-    private static Vec3 beamDirection(Minecraft mc, LivingEntity living, int targetId, float partialTick) {
-        Vec3 origin = HatAbilities.beamOrigin(living, partialTick);
+    private static Vec3 beamDirection(Minecraft mc, LivingEntity living, int targetId,
+                                      float partialTick, int lane) {
+        Vec3 origin = HatAbilities.beamOrigin(living, partialTick, lane);
         if (targetId >= 0) {
             Entity target = mc.level.getEntity(targetId);
             if (target != null) {

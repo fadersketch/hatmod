@@ -6,6 +6,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.OwnableEntity;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.monster.Silverfish;
 import net.minecraft.world.entity.monster.Slime;
@@ -43,8 +44,16 @@ import java.util.UUID;
 @Mod.EventBusSubscriber(modid = HatMod.MOD_ID)
 public final class BrainrotMinions {
 
-    /** 新刷出来的小怪离戴帽者多近才认主。 */
-    private static final double CAPTURE_RANGE = 24.0D;
+    /**
+     * 新刷出来的小怪离戴帽者多近才认主（格）。
+     *
+     * <p>原来是 24 格，可「渗液 / 虫蚀」是在**目标死亡的位置**爆出来的 —— 光柱 40 格、
+     * 声波 45 格，远端打死的怪，虫子直接落在认领范围之外，于是它们一出生就冲着主人来。
+     * 现在按最远的攻击手段（声波 45 格）再留一圈余量。
+     */
+    private static final double CAPTURE_RANGE = 64.0D;
+    /** 认领范围的兜底上限（格）：只有一个戴帽者在跑链路时用这个。 */
+    private static final double CAPTURE_FAR = 192.0D;
     /** 维护（清目标）的距离，超过就不再管它。 */
     private static final double UPKEEP_RANGE = 48.0D;
     /**
@@ -188,7 +197,28 @@ public final class BrainrotMinions {
                 best = candidate;
             }
         }
-        return best;
+        if (best != null) {
+            return best;
+        }
+        // 兜底：全场只有一个戴帽者在这条链路里 —— 那这些虫子只能是它放出来的。
+        // 「渗液 / 虫蚀」是在**目标死亡的位置**爆的，目标跑到几十格开外才死很常见；
+        // 按距离认领会漏掉，漏掉的虫子就成了无主敌人（还会被自己的光柱无视）。
+        // 仍然留一个上限（{@link #CAPTURE_FAR}），免得把一个史莱姆刷怪场整片收编。
+        LivingEntity only = null;
+        for (LivingEntity candidate : level.getEntitiesOfClass(LivingEntity.class,
+                entity.getBoundingBox().inflate(CAPTURE_FAR))) {
+            // 以前这里只扫玩家 —— 帽子戴在女仆 / Teto 头上时，它爆出来的虫子
+            // 一只都认不到主人，于是全成了「敌人」，连它自己的光柱都打。
+            if (!BrainrotCycle.isRunning(candidate) || !HatAbilities.isWearingHat(candidate)
+                    || candidate.distanceToSqr(entity) > CAPTURE_FAR * CAPTURE_FAR) {
+                continue;
+            }
+            if (only != null) {
+                return null;    // 不止一个，分不清是谁的 —— 宁可不管
+            }
+            only = candidate;
+        }
+        return only;
     }
 
     /**
@@ -203,6 +233,14 @@ public final class BrainrotMinions {
         }
         UUID minionOwner = OWNERS.get(entity.getUUID());
         if (minionOwner == null) {
+            return false;
+        }
+        // 反叛：真的咬过主人的，立刻从认领表里摘掉 —— 从此它就是普通敌人，
+        // 光柱锁得到、玩家也打得动（以前它一边咬人一边被当成自己人，光柱永远不打它）
+        if (entity instanceof LivingEntity living && HatAbilities.isRecentAggressor(wearer, living)) {
+            OWNERS.remove(entity.getUUID());
+            SITTING.remove(entity.getUUID());
+            HatMod.LOGGER.info("[hatmod] 召唤物反叛：{} 不再算自己人", entity.getType());
             return false;
         }
         if (minionOwner.equals(wearer.getUUID())) {
@@ -230,8 +268,27 @@ public final class BrainrotMinions {
         // 有些是在没人的时候爆出来的，从没进过 OWNERS，光靠登记表管不到
         for (Entity nearby : level.getEntitiesOfClass(Entity.class,
                 owner.getBoundingBox().inflate(UPKEEP_RANGE), BrainrotMinions::isSpawnedMinion)) {
-            if (nearby instanceof Mob mob) {
-                normalize(mob);
+            if (!(nearby instanceof Mob mob)) {
+                continue;
+            }
+            normalize(mob);
+            LivingEntity target = mob.getTarget();
+            boolean hostileToOwner = target != null && HatAbilities.isFriendlyTo(owner, target);
+            // 没登记上的（认领范围外爆出来的、循环开始前就有的）也一并算自己人 ——
+            // 尤其是**已经在打主人的**那些：再放着不管就是「自己召唤的虫子反咬自己」。
+            // 顺手收贴身的（16 格内），远处的野生蠹虫不碰。
+            if (!OWNERS.containsKey(mob.getUUID())
+                    && (hostileToOwner || mob.distanceToSqr(owner) <= 16.0D * 16.0D)
+                    && countOwned(level, owner.getUUID()) < MAX_MINIONS_PER_OWNER) {
+                OWNERS.put(mob.getUUID(), owner.getUUID());
+                mob.addTag(MINION_TAG);
+                mob.setPersistenceRequired();
+                mob.setTarget(null);
+                continue;
+            }
+            // 登记过的、没登记的，都不许盯着主人和主人的盟友
+            if (hostileToOwner) {
+                mob.setTarget(null);
             }
         }
         if (OWNERS.isEmpty()) {
@@ -257,6 +314,11 @@ public final class BrainrotMinions {
                 mob.discard();
                 OWNERS.remove(entry.getKey());
                 continue;
+            }
+            // 「不许咬主人」这一条**和距离无关**：远处那几只照样不许盯着主人
+            LivingEntity farTarget = mob.getTarget();
+            if (farTarget != null && HatAbilities.isFriendlyTo(owner, farTarget)) {
+                mob.setTarget(null);
             }
             if (mob.distanceToSqr(owner) > rangeSq) {
                 normalize(mob);
@@ -450,12 +512,15 @@ public final class BrainrotMinions {
             return;
         }
         if (ownerId.equals(victim.getUUID())) {
+            // 这一下是「自己人误伤」，不算数、也别记进「谁打过我」名单
+            HatAbilities.forgetAggressor(victim, attacker);
             event.setCanceled(true);
             return;
         }
         if (victim.level() instanceof ServerLevel level
                 && level.getEntity(ownerId) instanceof LivingEntity owner
                 && HatAbilities.isFriendlyTo(owner, victim)) {
+            HatAbilities.forgetAggressor(victim, attacker);
             event.setCanceled(true);
         }
     }

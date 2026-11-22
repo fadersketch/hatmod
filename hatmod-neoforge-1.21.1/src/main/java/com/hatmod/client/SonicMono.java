@@ -12,7 +12,8 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
  * 尖叫那一瞬的**黑白画面**：不用「黑暗」压视野（看不见路太伤），改成黑帽「预知」同款的后处理链
  * （{@link ForesightFilter}，整屏褪色成黑白）—— 威力一样是"世界忽然褪色"，但路还看得见。
  *
- * <p>时长由 {@link BrainrotCycle#sonicMonoWindow} 决定（和原来那一下黑暗同长）。
+ * <p>**只有声波真放出来了才有**：服务端放出声波时发一条 {@link SonicFlash} 的启动包，
+ * 没踩中那一拍就什么也不发生（以前是按固定刻数自己弹，打空也黑白）。
  * 每刻续两刻让它自己过期，窗口一过不留残影。
  */
 @EventBusSubscriber(modid = HatMod.MOD_ID, value = Dist.CLIENT)
@@ -30,8 +31,7 @@ public final class SonicMono {
         if (minecraft.player == null || !BrainrotQteClient.active()) {
             return;
         }
-        int age = BrainrotQteClient.age();
-        if (age < 0 || !BrainrotCycle.sonicMonoWindow(age)) {
+        if (!SonicFlash.mono()) {
             return;
         }
         ForesightFilter.start(REFRESH_TICKS);

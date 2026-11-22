@@ -68,6 +68,9 @@ public final class HatPreloader {
             "com.hatmod.HatType",
             "com.hatmod.HatType$Trait",
             "com.hatmod.Teto",
+            "com.hatmod.TetoRecall",
+            "com.hatmod.TetoChatCommand",
+            "com.hatmod.TetoVisit",
             "com.hatmod.HatAchievements",
             "com.hatmod.HatEffects$VulnerableEffect",
     };

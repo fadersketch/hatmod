@@ -50,5 +50,11 @@ public class HatTunerItem extends Item {
                                 List<Component> tooltip, TooltipFlag flag) {
         tooltip.add(Component.translatable("item.hatmod.tuner.desc")
                 .withStyle(ChatFormatting.GRAY, ChatFormatting.ITALIC));
+        tooltip.add(Component.translatable("item.hatmod.tuner.usage1")
+                .withStyle(ChatFormatting.GRAY));
+        tooltip.add(Component.translatable("item.hatmod.tuner.usage2")
+                .withStyle(ChatFormatting.GRAY));
+        tooltip.add(Component.translatable("item.hatmod.tuner.usage3")
+                .withStyle(ChatFormatting.GRAY));
     }
 }

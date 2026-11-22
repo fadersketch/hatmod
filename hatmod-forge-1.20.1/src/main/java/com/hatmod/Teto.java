@@ -1,5 +1,6 @@
 package com.hatmod;
 
+import com.hatmod.guard.HatGuard;
 import net.minecraft.core.particles.DustParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -9,6 +10,7 @@ import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
@@ -36,6 +38,7 @@ import org.joml.Vector3f;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -61,6 +64,20 @@ public class Teto extends PathfinderMob implements OwnableEntity {
     /** 召唤者 UUID。 */
     private static final EntityDataAccessor<Optional<UUID>> DATA_OWNER =
             SynchedEntityData.defineId(Teto.class, EntityDataSerializers.OPTIONAL_UUID);
+
+    /**
+     * 当前动作序号（0 = 原来那套；1 = 「Let's get it!!」那套；2 = 第三段舞）。
+     *
+     * <p>放在同步数据里，客户端渲染直接读；服务端是唯一写入方（右键 / 开歌强制归零）。
+     */
+    private static final EntityDataAccessor<Integer> DATA_ACTION =
+            SynchedEntityData.defineId(Teto.class, EntityDataSerializers.INT);
+
+    /** 动作 0：原本那套（曲子编排的那段舞）。 */
+    static final int ACTION_ORIGINAL = 0;
+
+    /** 一共几套动作：0 原版 / 1 「Let's get it!!」/ 2 第三段 / 3 前两段连跳。 */
+    static final int ACTION_COUNT = 4;
 
     /**
      * 绕圈半径 + 线速度。
@@ -126,10 +143,42 @@ public class Teto extends PathfinderMob implements OwnableEntity {
      * 认了主人就一直跟着，不要求戴着脑蚀。
      */
     private boolean summoned;
+    /** 刷怪蛋放出来的那一只：认主时说过话了没。 */
+    private boolean eggGreeted;
+    /** 光柱期间补出来的分身：不带台词，光柱一收就散。 */
+    private boolean extra;
+    /**
+     * 「留在原地」：停在原地待命 —— 不跟、不闲聊、不招仇恨。
+     *
+     * <p>口语上玩家会叫它「坐下」，但她并没有坐这个动作，只是不再跟着走；对外台词也按
+     * 「留下来」写。潜行 + 空手右键切换（见 {@code TetoSitting}）。链路正在跑时不让停下；
+     * 反过来，名下只要有一只留在原地的，链路开启时**一只都不放**（连收编、光柱分身都不做）。
+     */
+    private boolean sitting;
+    /** 散养（刷怪蛋/指令）时闲聊的计时器。 */
+    private int freeChatTicks;
     /** 「这一轮已经结束了」连续出现了几刻（宽限期内不散场，见 tick）。 */
     private int hatmodOrphanTicks;
     /** 宽限多少刻才真的散场（3 秒）。 */
     private static final int ORPHAN_GRACE_TICKS = 60;
+
+    /** 限伤：单次受击最多扣这么多血（点）。 */
+    private static final float TETO_HIT_CAP = 10.0F;
+
+    /** 散养的 Teto 多久聊一句（刻）：30 秒。 */
+    private static final int FREE_CHAT_PERIOD = 600;
+
+    /** 散养的跟随：离主人多近就停下（格）。 */
+    private static final double FREE_FOLLOW_STOP = 3.0D;
+    /** 散养的跟随：每刻最多挪多远（格）。 */
+    private static final double FREE_FOLLOW_SPEED = 0.34D;
+    /** 散养的跟随：超过这个距离直接传送过来（格）。 */
+    private static final double FREE_FOLLOW_TELEPORT = 28.0D;
+
+    /** 散养的招仇恨：多久扫一次周围（刻）。 */
+    private static final int AGGRO_PERIOD = 20;
+    /** 散养的招仇恨：敌对生物多近才会锁她（格）—— 和村民的索敌范围一个量级。 */
+    private static final double AGGRO_RADIUS = 16.0D;
 
     public Teto(EntityType<? extends Teto> type, Level level) {
         super(type, level);
@@ -147,6 +196,93 @@ public class Teto extends PathfinderMob implements OwnableEntity {
                 .add(Attributes.FOLLOW_RANGE, 32.0D);
     }
 
+    /**
+     * 曲子响起来了：把散养的这只**收编**成本轮本体（不重放一只新的）。
+     *
+     * <p>动作不用额外重置：链路里渲染取帧走的是曲子年龄，收编那一刻年龄正好归零，
+     * 她会从第 0 帧重新跳；这里只要把轨道相位按「站定在正前方」重新算一遍。
+     */
+    void hatmodAdopt(LivingEntity owner, double phase) {
+        this.summoned = true;
+        this.extra = false;
+        this.sitting = false;          // 被收编 = 上场了，先站起来
+        this.eggGreeted = true;
+        this.freeChatTicks = 0;
+        this.hatmodOrphanTicks = 0;
+        setOwnerUUID(owner.getUUID());
+        this.orbitPhase = (float) phase;
+        this.orbitAngle = 0.0D;
+    }
+
+    /**
+     * 「不请自来」到场的初始化：散养状态、直接认主、不再说初次见面的招呼。
+     *
+     * <p>和 {@link #hatmodAdopt} 的区别：那是把散养的**收编进链路**（summoned = true），
+     * 这里反过来 —— 她自己找上门，是散养的那只。
+     */
+    void hatmodVisitArrival(LivingEntity owner) {
+        setOwnerUUID(owner.getUUID());
+        this.summoned = false;
+        this.extra = false;
+        this.sitting = false;
+        this.eggGreeted = true;             // 招呼由调用方说「不请自来」那一组
+        this.freeChatTicks = 0;
+        this.hatmodOrphanTicks = 0;
+        this.orbitAngle = 0.0D;
+        this.orbitPhase = this.random.nextFloat() * (float) (Math.PI * 2.0D);
+        this.setPersistenceRequired();
+    }
+
+    /**
+     * 这一轮结束了，但把她**留下**：变回散养状态 —— 跟着主人走、会闲聊、会挡仇恨，
+     * 不再是这一轮的「主唱」（不绕圈、不放负面场、不吃曲终清场）。
+     *
+     * <p>下一轮开始时她会被 {@code HatSummons.adoptFreeTeto} 就地收编，不会多出一只新的。
+     */
+    void hatmodRelease(@Nullable LivingEntity owner) {
+        this.summoned = false;
+        this.extra = false;
+        this.sitting = false;
+        this.eggGreeted = true;             // 已经见过面了：不再说初次见面的那两句
+        this.freeChatTicks = 0;
+        this.hatmodOrphanTicks = 0;
+        this.setNoGravity(false);
+        this.orbitAngle = 0.0D;
+        this.orbitPhase = this.random.nextFloat() * (float) (Math.PI * 2.0D);
+        if (owner != null) {
+            setOwnerUUID(owner.getUUID());
+        }
+    }
+
+    /** 光柱期间的 3 个分身：和本体一样会跳，只是不开口。 */
+    void initExtra(LivingEntity owner, double phase) {
+        init(owner, phase);
+        this.extra = true;
+    }
+
+    /** 是不是光柱期间补出来的分身。 */
+    boolean isExtra() {
+        return this.extra;
+    }
+
+    /**
+     * 轨道半径（格）。召唤 / 收编时摆位用它，别写死 2 格 ——
+     * 摆得比轨道近，第一刻 orbit() 会把她一把拽到圆上，看着像闪了一下。
+     */
+    static double orbitRadius() {
+        return ORBIT_RADIUS;
+    }
+
+    /** 轨道相位（弧度）—— 光柱分身按它 +90° 排开用。 */
+    double orbitPhase() {
+        return this.orbitPhase;
+    }
+
+    /** 这一只**此刻**在轨道上的角度：orbitAngle + orbitPhase。 */
+    double orbitAngleNow() {
+        return this.orbitAngle + this.orbitPhase;
+    }
+
     void init(LivingEntity owner, double phase) {
         setOwnerUUID(owner.getUUID());
         this.orbitPhase = (float) phase;
@@ -155,6 +291,7 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         this.setNoAi(true);
         this.setPersistenceRequired();
         this.summoned = true;
+        this.sitting = false;
     }
 
     // ------------------------------------------------------------------
@@ -163,6 +300,7 @@ public class Teto extends PathfinderMob implements OwnableEntity {
     protected void defineSynchedData() {
         super.defineSynchedData();
         this.entityData.define(DATA_OWNER, Optional.empty());
+        this.entityData.define(DATA_ACTION, ACTION_ORIGINAL);
     }
 
     @Nullable
@@ -173,6 +311,7 @@ public class Teto extends PathfinderMob implements OwnableEntity {
 
     public void setOwnerUUID(@Nullable UUID uuid) {
         this.entityData.set(DATA_OWNER, Optional.ofNullable(uuid));
+        rememberOwner(this.getUUID(), uuid);
     }
 
     @Override
@@ -185,6 +324,10 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         tag.putFloat("Phase", this.orbitPhase);
         tag.putDouble("OrbitAngle", this.orbitAngle);
         tag.putBoolean("Summoned", this.summoned);
+        tag.putBoolean("Extra", this.extra);
+        tag.putBoolean("Sitting", this.sitting);
+        tag.putBoolean("Greeted", this.eggGreeted);
+        tag.putInt("Action", actionIndex());
     }
 
     @Override
@@ -197,6 +340,12 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         // 接着上次的角度转：这里原来是 0，重载一次四只会整体跳回起点
         this.orbitAngle = tag.getDouble("OrbitAngle");
         this.summoned = tag.getBoolean("Summoned");
+        this.extra = tag.getBoolean("Extra");
+        this.sitting = tag.getBoolean("Sitting");
+        // 说过招呼没有也要存：以前没存，重进游戏后她又把自己当成「第一次见面」。
+        // 老存档没有这个标记：有主人的一律当「已经见过」，别再补一句「又见面了」。
+        this.eggGreeted = tag.contains("Greeted") ? tag.getBoolean("Greeted") : tag.hasUUID("Owner");
+        setActionIndex(tag.getInt("Action"));
     }
 
     @Override
@@ -227,6 +376,55 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         return this.summoned;
     }
 
+    /** 当前动作序号（0 = 原来那套，1 / 2 = 另外两套）。 */
+    public int actionIndex() {
+        return this.entityData.get(DATA_ACTION);
+    }
+
+    /** 换动作。服务端调用；越界值一律按原动作处理。 */
+    public void setActionIndex(int action) {
+        this.entityData.set(DATA_ACTION,
+                action >= 0 && action < ACTION_COUNT ? action : ACTION_ORIGINAL);
+    }
+
+    /**
+     * 现在能不能换动作：曲子放着的时候不行（那一下算无效按键）。
+     *
+     * <p>「曲子正在放」问的是主人那一轮：链路里她是主唱，动作必须和谱面同步。
+     */
+    boolean canToggleAction() {
+        LivingEntity owner = this.getOwner();
+        return owner == null || !BrainrotCycle.isRunning(owner);
+    }
+
+    /** 坐着（原地待命）？ */
+    boolean isSitting() {
+        return this.sitting;
+    }
+
+    /**
+     * 让她留在原地 / 继续跟着。
+     *
+     * <p>留在原地 = 待命：不跟随、不闲聊、不招仇恨，主人走远也不传送过去。
+     * 继续跟着时什么都不用恢复 —— 下一拍 tick 自己接上。
+     */
+    void setSitting(boolean value) {
+        this.sitting = value;
+        this.freeChatTicks = 0;
+        if (value) {
+            this.getNavigation().stop();
+            this.setDeltaMovement(0.0D, 0.0D, 0.0D);
+            this.setPersistenceRequired();
+            // 她整套移动都是「每刻直接摆到轨道 / 主人身边」，自己从不受重力管；
+            // 坐下之后没人摆位了，`noPhysics = true` 下重力会一路把她拽穿地面、掉出世界。
+            // 坐着期间干脆关掉重力，起身再打开。
+            this.setNoGravity(true);
+        } else {
+            this.setNoGravity(false);
+        }
+    }
+
+
     @Nullable
     public LivingEntity ownerEntity(ServerLevel level) {
         UUID id = getOwnerUUID();
@@ -236,6 +434,154 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         Entity entity = level.getEntity(id);
         return entity instanceof LivingEntity living && living.isAlive() ? living : null;
     }
+
+    // ------------------------------------------------------------------
+    // 「谁名下有哪些 Teto」的名册（按 UUID 查，不经过实体的 getEntities）
+    // ------------------------------------------------------------------
+
+    /**
+     * Teto 自己记的名册：{@code 自己 UUID -> 主人 UUID}。
+     *
+     * <p>「这个玩家名下还有几只」原来是 {@code level.getEntitiesOfClass(...)}，那要经过
+     * 实体管理器的过滤（{@code EntityTickList} / {@code ServerLevel} 的那几个方法）。
+     * 有模组把这一层换掉之后，查询会说「一只都没有」：链路以为团灭、光柱也锁不到她。
+     * 这里只存 UUID，查的时候走 {@code Level#getEntity(UUID)}（纯查表），绕开那一层。
+     *
+     * <p>只存 UUID 不存实体引用：世界卸载 / 实体被删之后名册不会把人留在内存里 ——
+     * {@link #ownedBy} 顺手把查不到的条目剔掉。
+     */
+    private static final Map<UUID, UUID> OWNER_OF = new HashMap<>();
+
+    /** {@link #ownedBy} 的短缓存：名册不动的话，10 刻内直接复用上一次的结果。 */
+    private record OwnedCache(long until, List<Teto> list) {
+    }
+
+    private static final Map<UUID, OwnedCache> OWNED_CACHE = new HashMap<>();
+
+    /** 记进名册（{@link #setOwnerUUID} 是唯一入口，换主人会自动跟着改）。 */
+    private static void rememberOwner(@Nullable UUID teto, @Nullable UUID owner) {
+        if (teto == null) {
+            return;
+        }
+        if (owner == null) {
+            OWNER_OF.remove(teto);
+        } else {
+            OWNER_OF.put(teto, owner);
+        }
+        OWNED_CACHE.clear();
+    }
+
+    /**
+     * 某个人名下还活着的 Teto（**跨维度**，按 UUID 一个个取实体）。
+     *
+     * <p>查不到的直接从名册里剔掉 —— 被别的模组硬删掉的那只不会永远占着一个名额。
+     */
+    static List<Teto> ownedBy(LivingEntity owner) {
+        List<Teto> found = new ArrayList<>();
+        if (owner == null || OWNER_OF.isEmpty()) {
+            return found;
+        }
+        UUID ownerId = owner.getUUID();
+        long cacheNow = owner.level() instanceof ServerLevel server
+                ? server.getGameTime() : Long.MIN_VALUE;
+        if (cacheNow != Long.MIN_VALUE) {
+            OwnedCache cached = OWNED_CACHE.get(ownerId);
+            if (cached != null && cacheNow < cached.until) {
+                return cached.list;
+            }
+        }
+        List<ServerLevel> levels = new ArrayList<>();
+        if (owner.level() instanceof ServerLevel here && here.getServer() != null) {
+            for (ServerLevel level : here.getServer().getAllLevels()) {
+                levels.add(level);
+            }
+        } else if (owner.level() instanceof ServerLevel here) {
+            levels.add(here);
+        }
+        Iterator<Map.Entry<UUID, UUID>> it = OWNER_OF.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<UUID, UUID> entry = it.next();
+            if (!ownerId.equals(entry.getValue())) {
+                continue;
+            }
+            Teto alive = null;
+            for (ServerLevel level : levels) {
+                if (level.getEntity(entry.getKey()) instanceof Teto teto && !teto.isRemoved()) {
+                    alive = teto;
+                    break;
+                }
+            }
+            if (alive == null) {
+                it.remove();
+                continue;
+            }
+            found.add(alive);
+        }
+        if (cacheNow != Long.MIN_VALUE) {
+            OWNED_CACHE.put(ownerId, new OwnedCache(cacheNow + 10L, found));
+        }
+        return found;
+    }
+
+    /**
+     * 别的牛仔帽放出光柱的那一刻（见 {@code HatAbilities#tickingCharge}）：
+     * 旁边属于他的那只 Teto 会评价一句。
+     *
+     * <p>只有「她就在你旁边」才说 —— 20 格内、没留守、还在场上。她不在就当没看见。
+     */
+    static void commentOnBeam(LivingEntity wearer, ServerLevel level) {
+        for (Teto teto : ownedBy(wearer)) {
+            if (teto.isRemoved() || teto.isSitting() || teto.level() != level) {
+                continue;
+            }
+            if (teto.distanceToSqr(wearer) > 20.0D * 20.0D) {
+                continue;
+            }
+            TetoTalk.sayCooled(level, teto, 24.0D, "beam", 200, TetoSpeech.pick(level.random,
+                    TetoSpeech.summonsOf(wearer.getUUID()), "hatmod.teto.beam", 4, 2));
+            return;                     // 一只说就够了
+        }
+    }
+
+    /**
+     * 玩家换上了**另一顶**牛仔帽（黑 / 白 / 红 / 全 —— 相对她自己那顶脑蚀帽说的「别的帽子」）：
+     * 旁边属于他的那只 Teto 会评价一句。
+     *
+     * <p>每顶帽子各有三句、按顺序说（第一、二、三次戴这顶），说完就不再提 —— 见
+     * {@link TetoSpeech#wearLine}。和光柱那句一样：只有「她就在你旁边」才说。
+     */
+    static void commentOnHat(LivingEntity wearer, ServerLevel level, HatType type) {
+        for (Teto teto : ownedBy(wearer)) {
+            if (teto.isRemoved() || teto.isSitting() || teto.level() != level) {
+                continue;
+            }
+            if (teto.distanceToSqr(wearer) > 20.0D * 20.0D) {
+                continue;
+            }
+            // 先记下「他常戴哪顶」：第 4 次戴同一顶时她会说一句「又是这顶」（跨存档，一辈子一次）
+            String loyal = TetoRecall.noteHat(wearer.getUUID(), type);
+            if (loyal != null) {
+                TetoTalk.sayNear(level, teto, 24.0D, loyal);
+                return;
+            }
+            String key = TetoSpeech.wearLine(wearer.getUUID(), type);
+            if (key != null) {
+                TetoTalk.sayNear(level, teto, 24.0D, key);
+            }
+            return;                     // 一只说就够了
+        }
+    }
+
+    /** 名下有没有「坐着」的 Teto（坐着 = 原地待命；有的话链路开启时一只都不放）。 */
+    static boolean hasSitting(LivingEntity owner) {
+        for (Teto teto : ownedBy(owner)) {
+            if (teto.sitting) {
+                return true;
+            }
+        }
+        return false;
+    }
+
 
     // ------------------------------------------------------------------
     // 「友方单位」判定：照抄原版驯服的狼（TamableAnimal）那三条
@@ -249,7 +595,22 @@ public class Teto extends PathfinderMob implements OwnableEntity {
 
     @Override
     public boolean canAttack(LivingEntity target) {
+        if (this.sitting) {
+            return false;               // 留在原地的时候谁都不打，也不该被谁打
+        }
         return this.isOwnedBy(target) ? false : super.canAttack(target);
+    }
+
+    /**
+     * 留在原地的时候「看不见」。
+     *
+     * <p>怪物的索敌（{@code Monster.isPrey} / 感知）会先问这一句：返回 false 就不会把她
+     * 算成可攻击目标，连仇恨都建立不起来。已经锁上的（坐下之前就在打她的）由
+     * {@code clearMobTargets} 每 10 刻清一次。
+     */
+    @Override
+    public boolean canBeSeenAsEnemy() {
+        return !this.sitting && super.canBeSeenAsEnemy();
     }
 
     @Override
@@ -274,28 +635,56 @@ public class Teto extends PathfinderMob implements OwnableEntity {
     // 每刻：掉血、寿命、绕圈、嘲讽、负面场
     // ------------------------------------------------------------------
 
+    /** Promaid 彩蛋的后半句：第一句说完隔 3 秒补上（世界刻；-1 = 没有排着的话）。 */
+    private long eggFollowUpAt = -1L;
+    /** 彩蛋后半句隔多久（6 秒 —— 3 秒的话玩家上一句还没读完）。 */
+    private static final int EGG_FOLLOW_UP_DELAY = 120;
+
     @Override
     public void tick() {
         super.tick();
         if (this.level().isClientSide) {
             return;
         }
-        // 登记进「删不掉」名册：破防模式下被外人删掉会被拉回来
-        HatAbilities.watchSummon(this);
+        if (HatSettings.forceBreak()) {
+            HatAbilities.watchSummon(this);
+        }
         // 再把实体管理器的回调包一层：绕过 remove()/setRemoved() 的删除也要拦得住
         hatmodGuardLevelCallback();
         ServerLevel level = (ServerLevel) this.level();
+        // 彩蛋是「一句 + 停顿 + 一句」：前半句说完 3 秒，补上后半句
+        if (eggFollowUpAt >= 0 && level.getGameTime() >= eggFollowUpAt) {
+            eggFollowUpAt = -1L;
+            TetoTalk.sayNear(level, this, 24.0D, "hatmod.teto.egg.promaid.after.1");
+        }
         // 四只 Teto 各 tick 一次，tickTrails 内部按服务器刻去重，每刻只推进一次
         tickTrails(level);
+        // 附近有 Promaid 的「枪弹天使」时，她的话分三种场面（见 watchBulletAngel）
+        watchBulletAngel(level);
+        // 附近有 winefox delight 的怨灵：把它们按在原地（配乐 / 鬼图在客户端拦，见 GhostWarden）
+        GhostGuard.watchForTeto(level, this);
 
         // 不再逐刻掉血：寿命完全由「曲子还在不在放」决定（下面那条）。
         // 血量上限是 1024（原版属性上限），所以它是一块 1024 血的移动肉盾，只可能被打死。
         LivingEntity owner = ownerEntity(level);
         if (owner == null) {
+            if (this.sitting) {
+                // 坐着的那只：主人下线 / 换维度也原地待着，不换认别人
+                return;
+            }
             if (this.summoned) {
                 // 召唤出来的 Teto 一旦找不到主人（下线 / 换维度 / 重进存档）就自己散掉。
                 // 以前这里会「改认最近的玩家」，结果旧 Teto 挂到别人身上、越积越多。
+                // 散场前打一声招呼；四只同一刻走，冷却能把重复的话压成一句
+                TetoTalk.sayCooled(level, this, 24.0D, "leave", 100, TetoSpeech.pick(level.random,
+                        TetoSpeech.summonsOf(getOwnerUUID()), "hatmod.teto.leave", 2, 1));
                 disappear(level, "主人已不在这个世界（下线/换维度）");
+                return;
+            }
+            if (getOwnerUUID() != null) {
+                // 有主人、但主人这会儿不在（死了 / 下线 / 换了维度）：散养的她原地等，
+                // **不重新认别人**。以前这里会认最近的玩家 —— 于是「/kill @e 把自己打死」
+                // 的那一刻，她会把同一个（正在死的）玩家重新认一遍，顺口说一句「又见面了」。
                 return;
             }
             // 刷怪蛋 / 指令放出来的没有主人：认最近的玩家当主人（相位随手给一个，免得叠在一起）
@@ -304,8 +693,53 @@ public class Teto extends PathfinderMob implements OwnableEntity {
                 disappear(level, "32 格内没有可跟随的玩家");
                 return;
             }
+            // 曲子正在放：散养的让位（她不属于这一轮，留下会跟召唤出来的抢位置）
+            if (BrainrotCycle.isRunning(owner)) {
+                TetoTalk.sayNear(level, this, 24.0D, TetoSpeech.pick(level.random,
+                        TetoSpeech.summonsOf(owner.getUUID()), "hatmod.teto.free.leave", 1, 1));
+                disappear(level, "曲子已经响起来了，散养的 Teto 让位");
+                return;
+            }
             setOwnerUUID(owner.getUUID());
             this.orbitPhase = this.random.nextFloat() * (float) (Math.PI * 2.0D);
+            // 一个玩家只留一只散养的：新放的顶掉旧的
+            for (Entity other : level.getAllEntities()) {
+                if (other instanceof Teto teto && teto != this && !teto.isSummoned()
+                        && !teto.isSitting() && teto.isOwnedBy(owner)) {
+                    teto.hatmodDismiss();
+                }
+            }
+            if (!this.eggGreeted) {
+                this.eggGreeted = true;
+                // 认了主才算**一次成功召唤**（放出来又没认主的、被刷怪守卫挡下的都不算）
+                int summons = HatSettings.addTetoSummon(owner.getUUID(), level.getGameTime());
+                // 「又见面了？」只对真的见过她的人说（按次数分层，见 TetoSpeech）；
+                // 之前挨过打的，一半机会换成「你这次不会又打我吧」那一组。
+                // 换存档 / 久别重逢 / 死过几次 / 记住的那支舞 这类跨存档的旧账优先，
+                // 她说了这些就不再补普通的招呼（见 TetoRecall）。
+                String greeting = HatSettings.tetoHitFresh(owner.getUUID(), level.getGameTime())
+                        && level.random.nextBoolean()
+                        ? TetoTalk.pick(level.random, "hatmod.teto.greet.hit", 2)
+                        : TetoSpeech.pickGreeting(level.random, summons,
+                                TetoMood.tier(TetoMood.mood(owner.getUUID(), level.getGameTime())));
+                if (!TetoRecall.onMeet(level, this, owner)) {
+                    TetoTalk.sayNear(level, this, 24.0D, greeting);
+                }
+                HatSettings.markTetoMet(owner.getUUID());
+            }
+        }
+        if (this.sitting) {
+            // 留在原地 = 待命：不绕圈、不跟随、不闲聊、不放负面场，
+            // 也不走下面任何一条「该散场了」的判定（曲终 / 摘帽 / 断链都不关她的事）。
+            // 但位置得每刻钉住：`noPhysics` 下不钉就是自由落体，会直接掉出世界。
+            if (!this.isNoGravity()) {
+                this.setNoGravity(true);
+            }
+            this.setDeltaMovement(0.0D, 0.0D, 0.0D);
+            if (this.tickCount % 10 == 0) {
+                clearMobTargets(level);
+            }
+            return;
         }
         // 曲子召唤出来的只活到这一轮结束（曲终 / 摘帽）；刷怪蛋放出来的跟着主人，直到主人死亡。
         // 但**不能一断就走**：链路的 `AGES` 在「本轮结束 / 下一轮刚开」之间会有一拍是空的，
@@ -319,16 +753,27 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         }
         this.hatmodOrphanTicks = 0;
         if (owner.isDeadOrDying()) {
-            disappear(level, "主人已经死亡");
+            // 主人死了不等于她也死：她留在原地等着（死亡地点和复活点往往不是一个地方）。
+            // 玩家一复活，她会被挪到复活点旁边 —— 见 {@code TetoReaction#onRespawn}。
+            this.setDeltaMovement(0.0D, 0.0D, 0.0D);
+            this.fallDistance = 0.0F;
             return;
         }
 
-        this.orbit(owner);
-        this.tauntNearby(level, owner);
+        if (this.summoned) {
+            this.orbit(owner);
+            this.tauntNearby(level, owner);
+        } else {
+            // 散养的那只不绕圈：跟在你后面走（离太远就传送过来）
+            this.follow(owner);
+            this.freeChat(level);
+            this.drawAggro(level, owner);
+        }
         // 「Nope, too late」那一段画面上只该有那三个词和 Teto 本人：
         // 负面场、光环增益、打拍烟花全部停手 —— 火花和粒子都会糊住那一下小动作。
         boolean calm = BrainrotBeats.speechAnchor(this.tickCount) >= 0;
-        if (!calm && this.tickCount % AURA_PERIOD == 0) {
+        // 散养的不放负面场、也不给人上 buff —— 她只是跟着你走、陪你说话
+        if (this.summoned && !calm && this.tickCount % AURA_PERIOD == 0) {
             this.applyAura(level, owner);
             this.maybeBuffOwner(level, owner);
             this.maybeComboBuffOwner(level, owner);
@@ -468,7 +913,16 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         //
         // 「No too late」弹字期间不推进角度：停在圆周上的当前位置，只跟着主人平移
         // （与玩家相对静止）。上下微浮也挂在同一个角度上，所以会一起定住；文字一淡出就接着转。
-        if (!(this.summoned && BrainrotCycle.tetoOrbitFrozen(owner))) {
+        int chainAge = this.summoned ? BrainrotCycle.ageOf(owner) : -1;
+        int stillTick = BrainrotCycle.firstTextTick();
+        if (this.summoned && chainAge >= 0 && chainAge <= stillTick) {
+            // 开场这一段的角度**直接由链路年龄算**：从 0 到「站定」那一刻正好转满一整圈，
+            // 于是第一次 Nope, too late 出现时她刚好回到正前方 —— 四只的相位差是严格的 90°，
+            // 于是必然是一前、一右、一后、一左，不需要再花时间做任何「归位」修正。
+            // 为什么按年龄算而不是每刻加固定角度：服务器掉 TPS、链路追帧的时候，
+            // 累计角度会差出十几度 —— 偏偏就是那一秒，她会停在斜向之外。
+            this.orbitAngle = Math.PI * 2.0D * chainAge / stillTick;
+        } else if (!(this.summoned && BrainrotCycle.tetoOrbitFrozen(owner))) {
             // 光束期转两倍快：光柱在放的时候，绕圈的节拍也跟着提上来
             this.orbitAngle += ORBIT_SPEED * (this.summoned ? BrainrotCycle.orbitSpeedScale(owner) : 1.0D);
         }
@@ -510,6 +964,9 @@ public class Teto extends PathfinderMob implements OwnableEntity {
                     || mob instanceof Teto || mob instanceof HatSummon) {
                 continue;
             }
+            if (isBulletAngel(mob)) {
+                continue;                       // 不招她：这事玩家自己处理（何况她也打不动）
+            }
             if (HatAbilities.isFriendlyTo(owner, mob)) {
                 continue;
             }
@@ -525,6 +982,382 @@ public class Teto extends PathfinderMob implements OwnableEntity {
             }
             mob.setTarget(this);
         }
+    }
+
+    /** 留在原地期间：把「正锁着我」的怪物目标清掉（已经建立的仇恨不会自己消）。 */
+    private void clearMobTargets(ServerLevel level) {
+        for (LivingEntity other : level.getEntitiesOfClass(LivingEntity.class,
+                this.getBoundingBox().inflate(48.0D), entity -> entity instanceof Mob)) {
+            Mob mob = (Mob) other;
+            if (mob.getTarget() == this) {
+                mob.setTarget(null);
+            }
+        }
+    }
+
+    /**
+     * 散养的跟随：保持 3 格左右跟在后面，超过 28 格直接传送到主人身边。
+     *
+     * <p>她是 {@code setNoAi} 的平面贴图，没有寻路可用，所以直接改坐标 —— 和绕圈
+     * 用的是同一套做法，不会去撞方块。
+     */
+    /**
+     * 像原版宠物一样跟着主人换维度：散养的她直接搬过去，落在主人身边。
+     *
+     * <p>召唤出来的那几只不搬 —— 它们属于「这一轮」，换维度就照旧散场；
+     * 留守（坐着）的那只也不搬，她本来就是「原地等」。
+     */
+    /**
+     * 跟随换维专用的传送器：**跳过原版的传送门搜索**。
+     *
+     * <p>一参 {@code changeDimension} 走默认 {@code getPortalInfo} →
+     * {@code findDimensionEntryPoint}，后者会读 {@code portalEntrancePos} ——
+     * 跟随换维的她根本没碰过传送门方块，那个字段是 null，
+     * 原版搜索里 {@code getBlockState(null)} 直接 NPE 崩服（只崩 forge 树）。
+     * 落点本来就会在返回后被 {@code moveTo} 到主人身边，这里随便给个合法值即可。
+     */
+    private static final net.minecraftforge.common.util.ITeleporter FOLLOW_TELEPORTER =
+            new net.minecraftforge.common.util.ITeleporter() {
+                @Override
+                public net.minecraft.world.level.portal.PortalInfo getPortalInfo(Entity entity,
+                        ServerLevel dest, java.util.function.Function<ServerLevel,
+                        net.minecraft.world.level.portal.PortalInfo> defaultInfo) {
+                    return new net.minecraft.world.level.portal.PortalInfo(entity.position(),
+                            Vec3.ZERO, entity.getYRot(), entity.getXRot());
+                }
+
+                @Override
+                public boolean playTeleportSound(ServerPlayer player, ServerLevel from,
+                        ServerLevel to) {
+                    return false;
+                }
+            };
+
+    static void followThroughDimension(ServerPlayer owner, ServerLevel to) {
+        for (Teto teto : ownedBy(owner)) {
+            if (teto.isRemoved() || teto.isSitting() || teto.isSummoned()
+                    || teto.level() == to || !(teto.level() instanceof ServerLevel)) {
+                continue;
+            }
+            UUID id = teto.getUUID();
+            TetoSpawnGuard.beginDimensionTransfer(id);
+            try {
+                Entity moved = teto.changeDimension(to, FOLLOW_TELEPORTER);
+                if (moved instanceof Teto copy) {
+                    double angle = owner.getRandom().nextDouble() * Math.PI * 2.0D;
+                    copy.moveTo(owner.getX() + Math.cos(angle) * 2.4D, owner.getY(),
+                            owner.getZ() + Math.sin(angle) * 2.4D, owner.getYRot(), 0.0F);
+                }
+            } finally {
+                TetoSpawnGuard.endDimensionTransfer(id);
+            }
+        }
+    }
+
+    private void follow(LivingEntity owner) {
+        double distance = this.distanceTo(owner);
+        if (distance > FREE_FOLLOW_TELEPORT) {
+            double angle = this.random.nextDouble() * Math.PI * 2.0D;
+            this.moveTo(owner.getX() + Math.cos(angle) * 2.0D, owner.getY(),
+                    owner.getZ() + Math.sin(angle) * 2.0D, owner.getYRot(), 0.0F);
+            return;
+        }
+        if (distance <= FREE_FOLLOW_STOP) {
+            return;
+        }
+        double dx = owner.getX() - this.getX();
+        double dz = owner.getZ() - this.getZ();
+        double length = Math.sqrt(dx * dx + dz * dz);
+        if (length < 1.0E-4D) {
+            return;
+        }
+        double step = Math.min(FREE_FOLLOW_SPEED, length - FREE_FOLLOW_STOP);
+        this.setPos(this.getX() + dx / length * step, owner.getY(), this.getZ() + dz / length * step);
+    }
+
+    /**
+     * 招仇恨：让敌对生物像看到村民一样锁她。
+     *
+     * <p>原版的索敌目标表里只有玩家 / 村民这几类，Teto 不在里面，所以放着不管的话
+     * 怪物会完全无视她。这里每 20 刻扫一次周围的敌对生物：
+     * <ul>
+     *   <li>只挑 {@link Enemy}（会主动打村民的那一类）；</li>
+     *   <li>已经在追玩家的**不抢**——村民的索敌优先级本来就比玩家低；</li>
+     *   <li>已经追着别的目标（不是 Teto）的也不抢，避免把整片仇恨全吸过来；</li>
+     *   <li>要有视线、在 16 格内。</li>
+     * </ul>
+     */
+    private void drawAggro(ServerLevel level, LivingEntity owner) {
+        if (this.tickCount % AGGRO_PERIOD != 0) {
+            return;
+        }
+        for (Mob mob : level.getEntitiesOfClass(Mob.class,
+                this.getBoundingBox().inflate(AGGRO_RADIUS))) {
+            if (!(mob instanceof Enemy) || HatAbilities.isFriendlyTo(owner, mob)
+                    || isBulletAngel(mob)) {
+                continue;
+            }
+            LivingEntity current = mob.getTarget();
+            if (current instanceof net.minecraft.world.entity.player.Player) {
+                continue;
+            }
+            if (current != null && !(current instanceof Teto)) {
+                continue;
+            }
+            if (mob.distanceToSqr(this) > AGGRO_RADIUS * AGGRO_RADIUS
+                    || !mob.hasLineOfSight(this)) {
+                continue;
+            }
+            mob.setTarget(this);
+        }
+    }
+
+    /** 这一轮闲聊已经说了几句（meta 要等前 {@link #META_MIN_IDLE} 句说完才允许出现）。 */
+    private int idleSaid;
+    /** meta 台词最早排在第几句之后。 */
+    private static final int META_MIN_IDLE = 5;
+
+    /** 洗牌袋：把台词编号打乱后依次抽，抽完再洗，避免同一句反复出现。 */
+    private int[] freeDeck;
+    private int freeDeckPos;
+    /** 袋子是按哪一层洗的：换层要重洗。 */
+    private int freeDeckTier = -1;
+
+    /**
+     * 从这一层的池子里抽下一句（一轮之内不重复）。
+     *
+     * <p>袋子洗的是**池子的下标**：池子换了（第一次 20 条 / 第二次 26 条 / 第三次 26 条）
+     * 就重新洗。以前洗的是 1..N 的编号，换层时编号和实际台词对不上，
+     * 会取到不存在的那几行。
+     */
+    private String nextIdleLine(java.util.List<String> pool, int tier) {
+        if (this.freeDeck == null || this.freeDeckTier != tier
+                || this.freeDeckPos >= this.freeDeck.length) {
+            this.freeDeckTier = tier;
+            this.freeDeck = new int[pool.size()];
+            for (int i = 0; i < pool.size(); i++) {
+                this.freeDeck[i] = i;
+            }
+            for (int i = pool.size() - 1; i > 0; i--) {
+                int j = this.random.nextInt(i + 1);
+                int tmp = this.freeDeck[i];
+                this.freeDeck[i] = this.freeDeck[j];
+                this.freeDeck[j] = tmp;
+            }
+            this.freeDeckPos = 0;
+        }
+        return pool.get(this.freeDeck[this.freeDeckPos++]);
+    }
+
+    /** 散养的 Teto：每 30 秒聊一句（按「第几次被她陪」分层，见 {@link TetoSpeech}）。 */
+    private void freeChat(ServerLevel level) {
+        // 坐着 = 待命：既不闲聊，也不会「先走了」。tick 里坐着就早退了，这里再兜一道，
+        // 以后谁改了调用顺序也不会让她坐着坐着消失。
+        if (this.sitting) {
+            return;
+        }
+        if (++this.freeChatTicks < FREE_CHAT_PERIOD) {
+            return;
+        }
+        this.freeChatTicks = 0;
+        // 她在跟谁说这句话：台词的分层（第几次见面 / 记得哪些事）按**这个人**算。
+        // 主人不是玩家（生物戴帽子召唤出来的那种）：她**一句话都不说**。
+        ServerPlayer listener = listenerOf(level);
+        if (listener == null) {
+            return;
+        }
+        // 小概率：这一次她不说闲话，而是「我有点事，先走了」—— 当着你的面散场。
+        // 概率在调参器「脑蚀」页可调（出厂 1%），调试时拉到 1 就能每 30 秒复现一次。
+        if (this.random.nextDouble() < HatSettings.tetoVanishChance()) {
+            if (listener != null) {
+                // 她记得自己溜过一次 —— 下次再见面会说「上次是骗你的」
+                HatSettings.rememberTeto(listener.getUUID(), TetoSpeech.VANISH);
+            }
+            TetoTalk.sayNear(level, this, 24.0D, TetoSpeech.pick(level.random,
+                    TetoSpeech.summonsOf(listener.getUUID()), "hatmod.teto.free.vanish", 3, 2));
+            disappear(level, "闲聊时自己先走了（几率消失）");
+            return;
+        }
+        String shadeLine = TetoSpeech.shadeLine(level, listener);
+        if (shadeLine != null) {
+            TetoTalk.sayCooled(level, this, 24.0D, "shade", 1200, shadeLine);
+            this.idleSaid++;
+            return;
+        }
+        long moodNow = level.getGameTime();
+        int summons = HatSettings.tetoSummons(listener.getUUID());
+        // 「只属于此刻」的话：第二次见面那句、或者某段还没说过的记忆
+        String special = TetoSpeech.specialLine(level, listener.getUUID(), summons);
+        if (special != null) {
+            TetoTalk.sayNear(level, this, 24.0D, special,
+                    TetoSpeech.memoryArgs(listener.getUUID(), special));
+            this.idleSaid++;            // 记忆台词也算「这一轮已经说过的话」
+            return;
+        }
+        int tier = TetoSpeech.tierOf(summons);
+        // 一次对话的前 5 句不说 meta：她先像个正常人，聊开了才露出「我知道自己是模组角色」
+        boolean allowMeta = this.idleSaid >= META_MIN_IDLE;
+        java.util.List<String> pool = TetoSpeech.idlePool(summons, listener.getUUID(), allowMeta);
+        pool.addAll(TetoSpeech.moodPool(TetoMood.tier(TetoMood.mood(listener.getUUID(), moodNow))));
+        String idle = nextIdleLine(pool,
+                tier * 10000 + pool.size() * 100 + TetoSpeech.metaCount(summons, allowMeta));
+        this.idleSaid++;
+        if (idle.startsWith("hatmod.teto.egg.")) {
+            HatSettings.markTetoSpoken(listener.getUUID(), idle);   // 彩蛋一人只说一次
+            eggFollowUpAt = level.getGameTime() + EGG_FOLLOW_UP_DELAY;   // 6 秒后补后半句
+        } else if (idle.startsWith("hatmod.teto.boss.")) {
+            // 枪弹天使的机制 / 初衷：一人只说一次，而且整个话题只开一遍
+            HatSettings.markTetoSpoken(listener.getUUID(), idle);
+            HatSettings.markTetoSpoken(listener.getUUID(), TetoSpeech.ANGEL_TOPIC);
+        }
+        TetoTalk.sayNear(level, this, 24.0D, idle);
+    }
+
+    /**
+     * 「她在跟谁说话」：只有**玩家名下**的 Teto 才说话。
+     *
+     * <p>主人是生物（戴帽子的僵尸、别模组塞过来的）就当没有台词 —— 以前这里会退到
+     * 「最近的玩家」，结果一只僵尸的 Teto 会对着路过的人闲聊，看着很怪。
+     */
+    private ServerPlayer listenerOf(ServerLevel level) {
+        return ownerEntity(level) instanceof ServerPlayer player ? player : null;
+    }
+
+    // ------------------------------------------------------------------
+    // 和 Promaid 的联动：附近有「枪弹天使」时她会惊呼
+    // ------------------------------------------------------------------
+
+    /** Promaid 的枪弹天使在游戏里的注册 id（那个模组本体叫 maid_smart）。 */
+    private static final String BULLET_ANGEL_ID = "maid_smart:bullet_angel";
+    /** 多远之内算「看见了她」（格）。 */
+    private static final double ANGEL_SIGHT = 24.0D;
+
+    /** 三种场面各说一次，说完就记进配置，一辈子不再提。 */
+    private static final String ANGEL_MEET = "hatmod.teto.angel.meet";
+    private static final String ANGEL_DUEL = "hatmod.teto.angel.duel";
+    private static final String ANGEL_MOBS = "hatmod.teto.angel.mobs";
+
+    /**
+     * 附近有 Promaid 的「枪弹天使」时，她的话分三种场面，各说一次：
+     * <ol>
+     *   <li>{@code hatmod.teto.angel.meet.*} —— 刚撞见她（那句「这事你自己处理吧」）；</li>
+     *   <li>{@code hatmod.teto.angel.duel.*} —— 玩家真的和她打起来了；</li>
+     *   <li>{@code hatmod.teto.angel.mobs.*} —— 她转身去清别的怪了。</li>
+     * </ol>
+     *
+     * <p>以前是一句「惊呼」每 60 秒循环一次，听两遍就腻了。现在同一件事只开一次口：
+     * 记在 {@link HatSettings#markTetoSpoken} 里，换存档也还是说过。她本来就不掺和
+     * 那个天使的事（帽子也不会把天使当敌人），所以台词只是「表态」，不是战况播报。
+     *
+     * <p>**不硬依赖那个模组** —— 只按实体注册 id 认人（{@code maid_smart:bullet_angel}），
+     * 没装的时候这一段永远不会触发，也不会因为没装而崩。
+     */
+    private void watchBulletAngel(ServerLevel level) {
+        if (this.tickCount % 40 != 0 || this.extra) {
+            return;                       // 两秒查一次，不必每刻扫
+        }
+        ServerPlayer listener = listenerOf(level);
+        if (listener == null) {
+            return;
+        }
+        java.util.UUID player = listener.getUUID();
+        LivingEntity angel = nearestAngel(level, listener);
+        if (angel == null) {
+            return;
+        }
+        // 1) 第一次撞见：这句里就带着「我不插手」的态度，所以排在最前面
+        if (!HatSettings.tetoSpoken(player, ANGEL_MEET)) {
+            HatSettings.markTetoSpoken(player, ANGEL_MEET);
+            TetoTalk.sayNear(level, this, 24.0D,
+                    TetoTalk.pick(level.random, ANGEL_MEET, 3));
+            return;
+        }
+        // 2) 玩家和她动手了：只提醒一次，之后不再插嘴
+        if (!HatSettings.tetoSpoken(player, ANGEL_DUEL) && isDueling(angel, listener)) {
+            HatSettings.markTetoSpoken(player, ANGEL_DUEL);
+            TetoTalk.sayNear(level, this, 24.0D,
+                    TetoTalk.pick(level.random, ANGEL_DUEL, 3));
+            return;
+        }
+        // 3) 她自己跑去清别的怪了：这时候她顾不上玩家这边，说一句「这边归你」
+        if (!HatSettings.tetoSpoken(player, ANGEL_MOBS) && isBusyWithMobs(angel)) {
+            HatSettings.markTetoSpoken(player, ANGEL_MOBS);
+            TetoTalk.sayNear(level, this, 24.0D,
+                    TetoTalk.pick(level.random, ANGEL_MOBS, 3));
+        }
+    }
+
+    /** 玩家附近最近的那只枪弹天使（没有就是 null）。 */
+    @Nullable
+    private static LivingEntity nearestAngel(ServerLevel level, ServerPlayer player) {
+        LivingEntity best = null;
+        double bestDist = ANGEL_SIGHT * ANGEL_SIGHT;
+        for (Entity entity : level.getEntitiesOfClass(Entity.class,
+                player.getBoundingBox().inflate(ANGEL_SIGHT))) {
+            if (!isBulletAngel(entity) || entity.distanceToSqr(player) > bestDist) {
+                continue;
+            }
+            if (entity instanceof LivingEntity living) {
+                bestDist = entity.distanceToSqr(player);
+                best = living;
+            }
+        }
+        return best;
+    }
+
+    /** 玩家是不是真的在跟她打：她锁着玩家，或者两个人最近互相打过。 */
+    private static boolean isDueling(LivingEntity angel, ServerPlayer player) {
+        if (angel instanceof Mob mob && mob.getTarget() == player) {
+            return true;
+        }
+        if (angel.getLastHurtByMob() == player) {
+            return true;
+        }
+        return player.getLastHurtMob() == angel;
+    }
+
+    /** 她是不是跑去清别的怪了（锁着一个不是玩家的活物）。 */
+    private static boolean isBusyWithMobs(LivingEntity angel) {
+        if (!(angel instanceof Mob mob)) {
+            return false;
+        }
+        LivingEntity target = mob.getTarget();
+        return target != null && target != angel
+                && !(target instanceof net.minecraft.world.entity.player.Player);
+    }
+
+    /** 这个实体是不是 Promaid 的枪弹天使（按注册 id 认，不需要那个模组的类）。 */
+    static boolean isBulletAngel(Entity entity) {
+        if (entity == null) {
+            return false;
+        }
+        net.minecraft.resources.ResourceLocation id =
+                net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType());
+        return id != null && BULLET_ANGEL_ID.equals(id.toString());
+    }
+
+    /**
+     * 这一下伤害是不是枪弹天使打的。
+     *
+     * <p>她自己挥的那几下直接就能认出来；枪械 / 法术走的是弹射物、滞留云这类
+     * **带着主人**的实体，得顺着 {@code getOwner()} 往上找一层，不然只免疫本体、
+     * 子弹照样打得进去。
+     */
+    static boolean fromBulletAngel(DamageSource source) {
+        if (source == null) {
+            return false;
+        }
+        if (isBulletAngel(source.getEntity()) || isBulletAngel(source.getDirectEntity())) {
+            return true;
+        }
+        Entity direct = source.getDirectEntity();
+        if (direct instanceof net.minecraft.world.entity.projectile.Projectile shot) {
+            return isBulletAngel(shot.getOwner());
+        }
+        if (direct instanceof net.minecraft.world.entity.AreaEffectCloud cloud) {
+            return isBulletAngel(cloud.getOwner());
+        }
+        return false;
     }
 
     /**
@@ -836,14 +1669,6 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         return false;
     }
 
-    /**
-     * 破防模式下不接受「位移式删除」。
-     *
-     * <p>Witheria 的 {@code DeathProcedure} 删实体分两步：先 {@code discard()}（被我们的
-     * {@link #remove} 拦下），再把实体 {@code moveTo(x + 10000, -4096, z + 10000)} ——
-     * 甩到世界角落的虚空里。那个区块不加载，实体就从实体表里消失，于是
-     * {@code checkTetos} 一直数到 0、每 0.5 秒补一批，全堆在虚空里。
-     */
     @Override
     public void moveTo(double x, double y, double z) {
         if (this.hatmodRejectTeleport(x, y, z)) {
@@ -893,36 +1718,52 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         return true;
     }
 
-    /** 「拦下搬移」这条日志已经打过几次。 */
     private int hatmodTeleportLogged;
 
-    /**
-     * 破防模式下「打不过就加入」：外部想删我们一律不认（pig2 那招），自己的退场走内部开关。
-     *
-     * <p>别的模组的 killEntity / discard / 实体表清理最终都是调 {@code setRemoved}，
-     * 把这里挡住它们就删不掉。正常死亡（KILLED）不受影响。
-     */
     private boolean hatmodSelfRemoval;
-    /** 已经打过几次「拦下删除」的日志（别刷屏）。 */
+    /** 上一次「坐下 / 起身」手势的服务器刻（右键实体双手会各发一次，用它压成一次）。 */
+    private long lastSitCommand = Long.MIN_VALUE / 2;
+
+    /** 这一次右键算不算数：4 刻内只认第一次。 */
+    boolean hatmodAcceptSitCommand(long now) {
+        if (now - this.lastSitCommand < 4) {
+            return false;
+        }
+        this.lastSitCommand = now;
+        return true;
+    }
+
     private int hatmodRemovalLogged;
-    /** 把它打死的那一位：尸体被删前的那一秒用来反噬。 */
     private Entity hatmodKiller;
 
     @Override
     public void remove(net.minecraft.world.entity.Entity.RemovalReason reason) {
-        // 破防模式：外来的 killEntity / discard / 实体表清理 / setRemoved(KILLED) 一律不认，
-        // 只有「自己收场」和「区块卸载」放行（后者不放行会卡住存档和维度切换）。
-        // 平时不拦 —— 该被打死就被打死，链路跟着正常收场。
-        if (HatSettings.forceBreak() && !this.hatmodSelfRemoval
-                && reason != net.minecraft.world.entity.Entity.RemovalReason.UNLOADED_TO_CHUNK
-                && this.level() instanceof ServerLevel) {
-            if (hatmodRemovalLogged++ < 5) {
-                HatMod.LOGGER.warn("[hatmod] 拦下对 Teto 的 remove({})，调用方 {}",
-                        reason, hatmodForeignCaller() == null ? "原版流程" : hatmodForeignCaller());
+        // 自己收场 / 区块卸载：放行（后者不放行会卡住存档和维度切换）
+        if (this.hatmodSelfRemoval
+                || reason == net.minecraft.world.entity.Entity.RemovalReason.UNLOADED_TO_CHUNK
+                || reason == net.minecraft.world.entity.Entity.RemovalReason.CHANGED_DIMENSION
+                || !(this.level() instanceof ServerLevel)) {
+            HatGuard.beginApprovedRemoval();
+            try {
+                super.remove(reason);
+            } finally {
+                HatGuard.endApprovedRemoval();
             }
             return;
         }
-        super.remove(reason);
+        if (!HatSettings.forceBreak()) {
+            HatGuard.beginApprovedRemoval();
+            try {
+                super.remove(reason);
+            } finally {
+                HatGuard.endApprovedRemoval();
+            }
+            return;
+        }
+        if (hatmodRemovalLogged++ < 5) {
+            HatMod.LOGGER.warn("[hatmod] 拦下对 Teto 的 remove({})，调用方 {}",
+                    reason, hatmodForeignCaller() == null ? "原版流程" : hatmodForeignCaller());
+        }
     }
     /** 把实体管理器挂在我们身上的回调包一层（见 {@link #GuardedCallback}）。 */
     private void hatmodGuardLevelCallback() {
@@ -948,14 +1789,6 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         }
     }
 
-    /**
-     * 实体管理器的回调包装。
-     *
-     * <p>真正把实体从 level 里摘掉的是 {@code EntityInLevelCallback#onRemove} ——
-     * `remove()` 和 `setRemoved()` 的最后一步都是它。有的模组（Witheria 那种）绕过这两个
-     * 方法直接调它、或者写 removalReason 再调它，所以这一层也必须挡住，破防模式下才算
-     * 真的「pig2 级」。自己的退场（{@link #hatmodDismiss}）和区块卸载照常放行。
-     */
     private final class GuardedCallback implements net.minecraft.world.level.entity.EntityInLevelCallback {
         private final net.minecraft.world.level.entity.EntityInLevelCallback original;
 
@@ -974,7 +1807,12 @@ public class Teto extends PathfinderMob implements OwnableEntity {
         @Override
         public void onRemove(net.minecraft.world.entity.Entity.RemovalReason reason) {
             if (hatmodSelfRemoval
-                    || reason == net.minecraft.world.entity.Entity.RemovalReason.UNLOADED_TO_CHUNK) {
+                    || reason == net.minecraft.world.entity.Entity.RemovalReason.UNLOADED_TO_CHUNK
+                    || reason == net.minecraft.world.entity.Entity.RemovalReason.CHANGED_DIMENSION) {
+                original.onRemove(reason);
+                return;
+            }
+            if (!HatSettings.forceBreak()) {
                 original.onRemove(reason);
                 return;
             }
@@ -988,42 +1826,20 @@ public class Teto extends PathfinderMob implements OwnableEntity {
 
 
 
-    /**
-     * 帽子本体自己收掉（到期 / 卸下 / 换帽）的那一刻。
-     *
-     * <p>先把内部退场标记打上（这样 {@link #remove} 的防盗门不会拦自己），
-     * 再放一发「尾杀」—— 周围一圈外人陪着一起走，完全照 pig2 的 L4。
-     */
     public void hatmodDismiss() {
         if (!this.hatmodSelfRemoval) {
             this.hatmodSelfRemoval = true;
+            rememberOwner(this.getUUID(), null);   // 散场了：从名册里划掉
             HatAbilities.forgetSummon(this);
             HatAbilities.retaliate(this, this.hatmodKiller);
         }
-        // 不再早退：已经标过「散场」的也要**保证**真的离开世界。
-        // 以前第二次调用直接 return，第一次要是没删干净，这只就成了永远清不掉的影子。
         this.discard();
         if (!this.isRemoved()) {
             HatAbilities.forceRemoveEntity(this);
         }
     }
 
-    /**
-     * pig2 那招：外部想把我们写死（{@code setHealth(0)}）一律不认。
-     *
-     * <p>很多 Boss 不走 {@code hurt}，直接 {@code setHealth} 清血；只挡伤害是挡不住的。
-     */
 
-    /**
-     * 照 pig2 那招看调用栈：把这次调用的**外部发起者**找出来。
-     *
-     * <p>pig2 就是用 {@code isCalledFromOtherModWithinN} 这类栈检查认「是不是别的模组在动我」，
-     * 然后直接不认账。我们这边防御本身更狠（破防模式下除了自己的退场全挡），
-     * 但「凶手是谁」看不出来 —— 尤其是 {@code setHealth(0)} 这种不带伤害来源的路径。
-     * 这个方法只用来打日志定位。
-     *
-     * @return 第一个非原版 / 非本模组的调用方类名；找不到返回 null
-     */
     private static String hatmodForeignCaller() {
         StackTraceElement[] stack = new Throwable().getStackTrace();
         for (int i = 2; i < Math.min(stack.length, 20); i++) {
@@ -1040,10 +1856,6 @@ public class Teto extends PathfinderMob implements OwnableEntity {
 
     /** 已经打过几次「挨打 / 死亡」日志（只打前几条）。 */
     private int hatmodHitLogged;
-    /**
-     * 破防模式下恒为「活着」：血被外部直接写 0、或者对方绕过 hurt 调 die，
-     * 也不能让 {@code isAlive()} 变成 false —— 链路一看到它「死了」就会判定团灭重唱。
-     */
     @Override
     public boolean isAlive() {
         if (HatSettings.forceBreak() && !this.hatmodSelfRemoval) {
@@ -1054,8 +1866,7 @@ public class Teto extends PathfinderMob implements OwnableEntity {
 
     @Override
     public void setHealth(float health) {
-        // 破防模式：只准涨不准跌（很多 Boss 不走 hurt，直接 setHealth 清血）
-        if (HatSettings.forceBreak() && !this.hatmodSelfRemoval && health < this.getHealth()) {
+        if (SummonDefense.healthWriteBlocked(this.hatmodSelfRemoval, health, this.getHealth())) {
             if (hatmodHitLogged++ < 5) {
                 String caller = hatmodForeignCaller();
                 HatMod.LOGGER.warn("[hatmod] Teto 被写血 {} -> {}（调用方 {}），破防模式下不认账",
@@ -1064,26 +1875,52 @@ public class Teto extends PathfinderMob implements OwnableEntity {
             }
             return;
         }
-        super.setHealth(health);
+        com.hatmod.guard.HatGuard.beginApprovedHealth();
+        try {
+            super.setHealth(health);
+        } finally {
+            com.hatmod.guard.HatGuard.endApprovedHealth();
+        }
     }
 
-    /** 这一下是不是玩家 / 自己人打的（破防模式下对它们完全免疫）。 */
-    private boolean hatmodFriendlyStrike(DamageSource source) {
+    /**
+     * 这一下是不是「自己人」打的（主人的召唤物 / 同类 Teto / 主人的盟友）。
+     *
+     * <p>和 {@link #hatmodFriendlyStrike} 的区别：玩家**不算**自己人 —— 玩家打的正是
+     * 她最该回一句的那种。这里只用来决定「挨打那句话要不要说」。
+     */
+    private boolean hatmodAllyStrike(DamageSource source) {
         Entity attacker = source.getEntity();
-        if (attacker instanceof net.minecraft.world.entity.player.Player) {
-            return true;
+        if (attacker == null) {
+            return false;
         }
         if (attacker instanceof HatSummon || attacker instanceof Teto) {
             return true;
+        }
+        // 玩家**不算**自己人 —— 哪怕是她自己的主人。玩家打她正是她最该回一句的那种，
+        // 以前这里没挡住 isFriendlyTo(主人, 主人) == true，主人的那一下整段台词都被跳过了。
+        if (attacker instanceof net.minecraft.world.entity.player.Player) {
+            return false;
         }
         LivingEntity owner = this.getOwner();
         return owner != null && attacker instanceof LivingEntity living
                 && HatAbilities.isFriendlyTo(owner, living);
     }
 
+    private boolean hatmodFriendlyStrike(DamageSource source) {
+        return SummonDefense.friendlyStrike(source, this.getOwner());
+    }
+
+    /** 「挨打」那句话的冷却（刻）：10 秒。被一群怪围着也只 10 秒一句。 */
+    private static final int TETO_HIT_TALK_TICKS = 200;
+
     @Override
     public boolean hurt(DamageSource source, float amount) {
-        // 破防模式 = pig2 级：完全打不动（尾杀放在「本体自己收掉」的那一刻）
+        // 枪弹天使打不动她 —— 本体来的、子弹 / 法术来的（弹射物记着主人）都算。
+        // 这是设定不是数值：她不掺和，也不会被卷进去。
+        if (fromBulletAngel(source)) {
+            return false;
+        }
         if (HatSettings.forceBreak()) {
             if (hatmodHitLogged++ < 5) {
                 String caller = hatmodForeignCaller();
@@ -1094,6 +1931,21 @@ public class Teto extends PathfinderMob implements OwnableEntity {
             }
             return false;
         }
+        // 限伤：单次最多吃这么多。310 血 + 每下封顶，一群小怪围着也磨得死，
+        // 但不会被一发高伤直接带走。
+        // 指令击杀（/kill、/kill @e）不受单次限伤：那不是战斗，是「外面有人直接把她抹掉」。
+        // 不放过的话 /kill 只扣 10 点，她根本死不了，die() 里那句吐槽也就永远说不出来。
+        if (!"genericKill".equals(source.getMsgId())) {
+            amount = Math.min(amount, TETO_HIT_CAP);
+        }
+        // 放歌期间：玩家打不动她（她是这一轮的主唱，不该在曲子中间被敲）
+        boolean playerHit = source.getEntity() instanceof net.minecraft.server.level.ServerPlayer;
+        if (playerHit && this.summoned && this.level() instanceof ServerLevel level) {
+            LivingEntity owner = ownerEntity(level);
+            if (owner != null && BrainrotCycle.isRunning(owner)) {
+                return false;
+            }
+        }
         boolean hurt = super.hurt(source, amount);
         // 受击反馈：原版「打到人」的那团暗红粒子（Player.attack 同款同参数），
         // 挨打看得见，不会再「默默掉血」了
@@ -1102,6 +1954,33 @@ public class Teto extends PathfinderMob implements OwnableEntity {
                     this.getX(), this.getY() + this.getBbHeight() * 0.5D, this.getZ(),
                     15, this.getBbWidth() * 0.5D, this.getBbHeight() * 0.25D,
                     this.getBbWidth() * 0.5D, 0.1D);
+            // 挨打的那句话：**玩家打的和别的东西打的都算**。
+            // 早先这段整个包在「攻击者是玩家」里面，还额外要求「不是召唤来的那只」——
+            // 于是被怪围、被箭射、被光柱扫到一声都没有，看着就像「受击语音不触发」。
+            // 玩家打的仍是原来那两句；别的东西打的用另一组（她分得清是谁在打她）。
+            // 挨打的话只在「真的被谁打了」的时候说：摔伤、着火、溺水、饥饿这些**没有攻击者**
+            // 的伤害一律不吭声。箭 / 雪球 / 三叉戟和近战共用同一组通用台词 ——
+            // 不按武器分池子（以前单拎出一句「连箭都冲我来」，箭没来的时候也会冒出来）。
+            // 坐着待命的时候被打照样吭声：被打就是被打。
+            if (source.getEntity() != null && !hatmodAllyStrike(source)) {
+                LivingEntity hitOwner = ownerEntity(level);
+                // 主人是生物（Khragg 这类）时她不开口：台词是给玩家听的
+                if (hitOwner != null && !(hitOwner instanceof ServerPlayer)) {
+                    return hurt;
+                }
+                int summons = hitOwner == null ? 0 : TetoSpeech.summonsOf(hitOwner.getUUID());
+                String key = playerHit
+                        ? TetoSpeech.pick(level.random, summons, "hatmod.teto.free.hit", 2, 2)
+                        : TetoSpeech.pick(level.random, summons, "hatmod.teto.hit.other", 3, 2);
+                TetoTalk.sayCooled(level, this, 24.0D, "hit", TETO_HIT_TALK_TICKS, key);
+                // 她记得「**你**打过她」：之后的开场白 / 见面招呼会因此换一组（见 TetoSpeech.HIT）。
+                // 只认她主人本人动手 —— 被怪打、被宠物误伤、被别的玩家打都不记，
+                // 不然围殴过一轮之后，下次见面就会莫名其妙来一句「你这次不会又打我吧」。
+                if (hitOwner instanceof ServerPlayer bitten && source.getEntity() == bitten) {
+                    HatSettings.markTetoHit(bitten.getUUID(), level.getGameTime());
+                    TetoMood.adjust(bitten.getUUID(), -8, level.getGameTime());
+                }
+            }
         }
         return hurt;
     }
@@ -1113,6 +1992,36 @@ public class Teto extends PathfinderMob implements OwnableEntity {
                     this.getX(), this.getY() + this.getBbHeight() * 0.5D, this.getZ(),
                     16, 0.4D, 0.8D, 0.4D, 0.03D);
         }
+        boolean commandKill = "genericKill".equals(source.getMsgId());
+        if (commandKill) {
+            if (!HatSettings.forceBreak() && this.level() instanceof ServerLevel killLevel) {
+                // 「/kill @e」这种一锅端：不说普通的死法，改吐槽这一下（见 TetoMassKill）。
+                // 几只 Teto 同一刻一起死也只会剩一句（sayCooled 按玩家去重）。
+                boolean mass = TetoMassKill.massKill(killLevel.getGameTime());
+                TetoTalk.sayCooled(killLevel, this, 128.0D, "kill", 60, TetoSpeech.pick(
+                        killLevel.random, TetoSpeech.summonsOf(getOwnerUUID()),
+                        mass ? "hatmod.teto.kill.mass" : "hatmod.teto.kill", 2, mass ? 1 : 2));
+            }
+        } else if (this.summoned && !this.extra && this.level() instanceof ServerLevel level) {
+            LivingEntity owner = ownerEntity(level);
+            if (owner instanceof ServerPlayer player) {
+                // 她记得自己在一轮里倒下过 —— 下次见面会说「这次别再让我倒下了」
+                HatSettings.rememberTeto(player.getUUID(), TetoSpeech.CHAIN_DIED);
+                TetoMood.adjust(player.getUUID(), -10, level.getGameTime());
+            }
+            if (owner instanceof ServerPlayer && BrainrotCycle.isRunning(owner)) {
+                TetoTalk.sayCooled(level, this, 48.0D, "die", 400, TetoSpeech.pick(level.random,
+                        TetoSpeech.summonsOf(getOwnerUUID()), "hatmod.teto.die", 2, 2));
+            }
+        }
+        // 散养的（刷怪蛋/指令）：死了就当「她跑了」，按凶手分两种说法
+        if (!commandKill && !this.summoned && this.level() instanceof ServerLevel freeLevel) {
+            boolean byMe = source.getEntity() != null
+                    && source.getEntity().getUUID().equals(getOwnerUUID());
+            String base = byMe ? "hatmod.teto.free.die.player" : "hatmod.teto.free.die.other";
+            TetoTalk.sayNear(freeLevel, this, 24.0D, TetoSpeech.pick(freeLevel.random,
+                    TetoSpeech.summonsOf(getOwnerUUID()), base, 2, 1));
+        }
         this.hatmodKiller = source.getEntity();
         if (HatMod.LOGGER.isWarnEnabled()) {
             HatMod.LOGGER.warn("[hatmod] Teto 收到死亡事件（{} 造成，{}）{}",
@@ -1120,18 +2029,11 @@ public class Teto extends PathfinderMob implements OwnableEntity {
                     source.getMsgId(),
                     HatSettings.forceBreak() ? "，破防模式下忽略" : "");
         }
-        // 破防模式：**不调 super.die** —— 它会把 dead 标记置上，别的模组一看「死了」就来删，
-        // 而 remove 又被我们挡着，实体就卡成「已死但还在」，链路反而判不出团灭。
-        // 这一模式下的退场只走 hatmodDismiss（到期 / 卸帽 / 换帽那一刻）。
         if (!HatSettings.forceBreak()) {
             super.die(source);
         }
     }
 
-    /**
-     * 尸体即将被删除的那一秒（{@code deathTime == 19}，下一 tick 就 remove）：
-     * 破防模式下放 pig2 同款反噬。
-     */
     @Override
     protected void tickDeath() {
         if (this.deathTime == 19) {

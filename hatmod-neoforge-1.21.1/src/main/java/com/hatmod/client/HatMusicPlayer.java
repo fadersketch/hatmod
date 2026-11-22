@@ -3,9 +3,12 @@ package com.hatmod.client;
 import com.hatmod.HatMod;
 import com.hatmod.HatMusic;
 import com.hatmod.HatSounds;
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.Level;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -51,8 +54,17 @@ public final class HatMusicPlayer {
     /** 重建之后的冷却（刻）：期间不再重试，免得播放失败时每刻都在建实例。 */
     private static final int RESTART_COOLDOWN = 20;
 
+    /** 帽子消失的宽限（刻）：戴上 / 摘下的同步总有一点先后，别让刚建起来的声道立刻被收掉。 */
+    private static final int HAT_GONE_GRACE = 40;
+
     /** 戴帽者实体 id -> 它那条 BGM。{@link LinkedHashMap} 的插入顺序 = 响起顺序。 */
     private static final Map<Integer, Track> TRACKS = new LinkedHashMap<>();
+
+    /** 开始请求先到、世界 / 实体还没准备好的情况：等下一 tick 再起播。 */
+    private static final Map<Integer, Integer> PENDING = new LinkedHashMap<>();
+
+    /** 上一次看到的客户端世界：换了世界就把上一局的声道和谱面钟全部清掉。 */
+    private static Level lastLevel;
 
     /** 客户端刻计数，给 {@link HatMusicInstance} 记心跳用。 */
     private static int ticks;
@@ -63,10 +75,13 @@ public final class HatMusicPlayer {
         private final SoundEvent sound;
         private HatMusicInstance instance;
         private int retryAt;
+        /** 这条什么时候建起来的（客户端刻）：帽子判定给一点宽限，别和同步赛跑。 */
+        private final int bornAt;
 
         private Track(Entity wearer, SoundEvent sound) {
             this.wearer = wearer;
             this.sound = sound;
+            this.bornAt = ticks;
         }
     }
 
@@ -79,14 +94,22 @@ public final class HatMusicPlayer {
 
     /** 服务端通知：某个戴帽者的 BGM 开始 / 停止了。 */
     public static void handle(int wearerId, int ordinal, boolean playing) {
-        // 打拍的客户端钟：只有本地玩家自己的脑蚀 BGM 才立钟（见 BrainrotQteClient）
-        BrainrotQteClient.onMusic(wearerId, ordinal, playing);
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.level == null) {
+            // 重进游戏时世界还没建好：先记下请求，等世界好了再起播。
+            // 不能在没声音的时候先把谱面钟立起来 —— 那就是音画不同步。
+            if (playing) {
+                PENDING.put(wearerId, ordinal);
+            } else {
+                PENDING.remove(wearerId);
+                BrainrotQteClient.onMusic(wearerId, ordinal, false);
+            }
             return;
         }
         Track track = TRACKS.get(wearerId);
         if (!playing) {
+            PENDING.remove(wearerId);
+            BrainrotQteClient.onMusic(wearerId, ordinal, false);
             if (track != null) {
                 stop(minecraft, track);
                 TRACKS.remove(wearerId);
@@ -95,14 +118,21 @@ public final class HatMusicPlayer {
             return;
         }
 
-        SoundEvent sound = HatSounds.forOrdinal(ordinal);
         Entity wearer = minecraft.level.getEntity(wearerId);
         if (wearer == null) {
-            // 客户端世界里没有这个实体（离得远没同步过来）。这时本来也听不见，直接不播。
+            // 实体还没同步过来：等它到了再立钟 + 起播
+            PENDING.put(wearerId, ordinal);
             return;
         }
 
-        // 同一轮循环重开会再发一次开始：先把上一条换掉，免得两条叠在一起
+        // 钟和声音一起从 0 开始
+        PENDING.remove(wearerId);
+        BrainrotQteClient.onMusic(wearerId, ordinal, true);
+        SoundEvent sound = HatSounds.forOrdinal(ordinal);
+        // 「脑蚀」曲（Teto 帽的歌）起播、且戴帽子的是本地玩家自己：提示一句第三人称
+        if (ordinal == HatMusic.BRAINROT_ORDINAL && wearer == minecraft.player) {
+            showThirdPersonHint();
+        }
         if (track != null) {
             stop(minecraft, track);
         }
@@ -127,16 +157,57 @@ public final class HatMusicPlayer {
         }
     }
 
+    /**
+     * 「脑蚀」曲（Teto 帽的歌）起播、且戴帽子的是本地玩家：在**聊天栏**提示一句
+     * 「第3人称游玩体验最佳」（绿色加粗；落在聊天记录里，不会像标题那样糊满屏幕）。
+     *
+     * <p>只有服务端发来「曲子开始」这一下才提示：一轮链路内部的声道重建
+     * （{@link #onClientTick} 里的原地重建）不走 {@link #handle}，不会反复冒出来。
+     */
+    private static void showThirdPersonHint() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.player != null) {
+            minecraft.player.displayClientMessage(Component.literal("第3人称游玩体验最佳")
+                    .withStyle(ChatFormatting.GREEN, ChatFormatting.BOLD), false);
+        }
+    }
+
     @SubscribeEvent
     public static void onClientTick(ClientTickEvent.Post event) {
         Minecraft minecraft = Minecraft.getInstance();
+        installMusicListener(minecraft);
         // 暂停时先返回：声音引擎也一起停了，谱子的钟跟着停才对得上
         if (minecraft.isPaused()) {
             return;
         }
+        // 换世界 / 重进游戏：上一局留下的声道、待播队列、谱面钟全部清掉
+        if (minecraft.level != lastLevel) {
+            lastLevel = minecraft.level;
+            for (Track old : TRACKS.values()) {
+                stop(minecraft, old);
+            }
+            TRACKS.clear();
+            PENDING.clear();
+            BrainrotQteClient.reset();
+        }
+        // 世界建好之后，把「开始包先到、实体还没同步」的请求补上
+        if (!PENDING.isEmpty() && minecraft.level != null) {
+            Iterator<Map.Entry<Integer, Integer>> pendingIt = PENDING.entrySet().iterator();
+            while (pendingIt.hasNext()) {
+                Map.Entry<Integer, Integer> entry = pendingIt.next();
+                if (minecraft.level.getEntity(entry.getKey()) != null) {
+                    int wearerId = entry.getKey();
+                    int ordinal = entry.getValue();
+                    pendingIt.remove();
+                    handle(wearerId, ordinal, true);
+                }
+            }
+        }
         // 谱子的钟按**真实时间**走：实体多、帧率掉的时候游戏刻会慢，但 BGM 不会
         BrainrotQteClient.advanceClock();
         if (TRACKS.isEmpty()) {
+            // 帽子 BGM 一条都没有：别的 BGM 该响就响，不用管（顺手清一下名单）
+            silenceVanillaMusic(minecraft, false);
             return;
         }
 
@@ -154,6 +225,16 @@ public final class HatMusicPlayer {
                 iterator.remove();
                 continue;
             }
+            // 帽子已经不在身上了（例如从饰品栏拿走）：服务端偶尔来不及发停止包，
+            // 这里本地再兜一道 —— 「没帽子就没有 BGM」是这个系统的死规矩。
+            if (ticks - track.bornAt > HAT_GONE_GRACE
+                    && track.wearer instanceof net.minecraft.world.entity.LivingEntity living
+                    && !(living instanceof com.hatmod.TangJiaqiWhite)
+                    && !com.hatmod.HatAbilities.isWearingHat(living)) {
+                stop(minecraft, track);
+                iterator.remove();
+                continue;
+            }
             if (isAlive(track) || ticks < track.retryAt) {
                 continue;
             }
@@ -163,6 +244,94 @@ public final class HatMusicPlayer {
             start(minecraft, track);
         }
         applyVolumes(minecraft);
+        // 帽子 BGM 在响 = 「这顶帽子启动了」：把别的 BGM（世界音乐、Boss 音乐……）全部停掉
+        silenceVanillaMusic(minecraft, anyAudible());
+    }
+
+    /** 现在有没有哪一条帽子 BGM 是真的听得见的（没被压掉、声道还活着）。 */
+    private static boolean anyAudible() {
+        for (Track track : TRACKS.values()) {
+            HatMusicInstance instance = track.instance;
+            if (instance != null && !instance.isStopped() && !instance.isMuted()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 别的模组 / 原版的背景音乐里正在响的那些（监听器只通知「开始播」，播完的这里自己清）。 */
+    private static final java.util.List<net.minecraft.client.resources.sounds.SoundInstance>
+            FOREIGN_MUSIC = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    /** 监听器只装一次。 */
+    private static boolean musicListenerInstalled;
+
+    /**
+     * 装上「有新背景音乐开始播」的监听器：原版 / 别的模组放的非帽子 BGM 全走
+     * {@link net.minecraft.sounds.SoundSource#MUSIC}，这里把它们记下来，
+     * 帽子启动时好**一首一首**停 —— 而不是按声道一锅端
+     * （一锅端会把枪弹天使的 BGM 也一起掐掉，见 {@link #isBulletAngelBgm}）。
+     */
+    private static void installMusicListener(Minecraft minecraft) {
+        if (musicListenerInstalled) {
+            return;
+        }
+        musicListenerInstalled = true;
+        minecraft.getSoundManager().addListener(new net.minecraft.client.sounds.SoundEventListener() {
+            @Override
+            public void onPlaySound(net.minecraft.client.resources.sounds.SoundInstance sound,
+                    net.minecraft.client.sounds.WeighedSoundEvents events, float volume) {
+                rememberForeignMusic(sound);
+            }
+        });
+    }
+
+    private static void rememberForeignMusic(net.minecraft.client.resources.sounds.SoundInstance sound) {
+        if (sound.getSource() == net.minecraft.sounds.SoundSource.MUSIC
+                && !isBulletAngelBgm(sound)) {
+            FOREIGN_MUSIC.add(sound);
+        }
+    }
+
+    /**
+     * 枪弹天使（promraid）的 BGM：特例，帽子启动时**不掐**她的曲子。
+     *
+     * <p>音效 id 是 {@code maid_smart:bgm_bullet_angel}，在 promraid 里走的是
+     * {@code RECORDS} 声道（本来就不在 MUSIC 名单里）；这里按 id 再兜一道 ——
+     * 哪天上游改成 MUSIC 声道，也不会被我们误杀。
+     */
+    private static boolean isBulletAngelBgm(net.minecraft.client.resources.sounds.SoundInstance sound) {
+        return "bgm_bullet_angel".equals(sound.getLocation().getPath());
+    }
+
+    /**
+     * 「这顶帽子启动了」的时候，把**别的所有 BGM** 掐掉 —— 世界音乐、Boss 战音乐、
+     * 别的模组放的音乐。全部按「实例」逐个停：
+     * <ul>
+     *   <li>帽子自己的 BGM 走 {@link net.minecraft.sounds.SoundSource#PLAYERS}，不在名单里；</li>
+     *   <li>枪弹天使的 BGM（{@code maid_smart:bgm_bullet_angel}）点名豁免；</li>
+     *   <li>原版那个「背景音乐调度器」（{@link net.minecraft.client.sounds.MusicManager}）
+     *       只认自己记的那一条，声道被停掉之后还会再起，所以每刻顺手把它那份停掉。</li>
+     * </ul>
+     * 曲终 / 摘帽后 {@code active} 变 false，世界音乐下一轮自然就回来了 ——
+     * 这里不用、也不该手动恢复。
+     */
+    private static void silenceVanillaMusic(Minecraft minecraft, boolean active) {
+        // 播完 / 已经被别的代码停掉的条目顺手清掉（监听器只告诉我们「开始播了」）
+        FOREIGN_MUSIC.removeIf(sound -> !minecraft.getSoundManager().isActive(sound));
+        if (!active) {
+            return;
+        }
+        minecraft.getMusicManager().stopPlaying();
+        // CopyOnWriteArrayList 的迭代器是快照，不能 remove：先拷一份再逐条停
+        for (net.minecraft.client.resources.sounds.SoundInstance sound
+                : new java.util.ArrayList<>(FOREIGN_MUSIC)) {
+            if (isBulletAngelBgm(sound)) {
+                continue;               // 特例：她的曲子留着
+            }
+            minecraft.getSoundManager().stop(sound);
+            FOREIGN_MUSIC.remove(sound);
+        }
     }
 
     /**

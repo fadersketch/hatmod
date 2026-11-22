@@ -50,9 +50,19 @@ public final class HatNetwork {
         // 版本 "8"：加了闪避通知包（QteDodgePayload）。
         // 版本 "10"：加了「自动打拍」调试开关（AutoTapPayload）。
         // 版本 "11"：同一个包加了反向（S2C），进服时把开关状态同步回客户端。
+        // 版本 "12"：打拍状态包加了「攒闪避计数」字段（QteStatePayload）。
+        // 版本 "13"：同一个包又加了「得分 / MISS」两个字段。
+        // 版本 "14"：再加「踩对数」，包体改成手写（composite 最多 6 个）。
+        // 版本 "15"：再加「PERFECT / GOOD 数」。
+        // 版本 "16"：加了声波启动包（SonicFlashPayload：黑白闪 / 锁视线）。
+        // 版本 "17"：打拍状态包带了「判的是哪一拍」（HUD 不再把 MISS 画到隔壁键上）。
+        // 版本 "18"：加了「按住」包（QteHoldPayload）—— 长音按多久由客户端报真实按键状态。
+        // 版本 "19"：调参包加了「脑蚀百分比伤害倍率」（调参器「脑蚀」页第二个框）。
+        // 版本 "21"：加了「Teto 舞曲静音」包（TetoMusicPayload）。
+        // 版本 "22"：加了「BGM 真的响起来了」回执（MusicStartedPayload，C2S）。
         // 版本不同时 NeoForge 会拒绝握手，而不是拿错值跑。
         // 以后只要改动任何包的字段布局，都要把这个版本号加一。
-        var registrar = event.registrar("11");
+        var registrar = event.registrar("22");
         registrar.playToClient(
                 BeamTargetPayload.TYPE,
                 BeamTargetPayload.STREAM_CODEC,
@@ -92,6 +102,14 @@ public final class HatNetwork {
                 (payload, context) -> context.enqueueWork(
                         () -> com.hatmod.client.BrainrotSpin.set(payload.wearerId(), payload.spin())));
         registrar.playToServer(
+                MusicStartedPayload.TYPE,
+                MusicStartedPayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(() -> {
+                    if (context.player() instanceof ServerPlayer player) {
+                        HatAbilities.noteMusicStarted(player, payload.wearerId());
+                    }
+                }));
+        registrar.playToServer(
                 SettingsUpdatePayload.TYPE,
                 SettingsUpdatePayload.STREAM_CODEC,
                 (payload, context) -> context.enqueueWork(() -> handleUpdate(payload, context)));
@@ -102,6 +120,15 @@ public final class HatNetwork {
                 (payload, context) -> context.enqueueWork(() -> {
                     if (context.player() instanceof ServerPlayer player) {
                         BrainrotQte.tap(player, payload.clientAge());
+                    }
+                }));
+        // 「按住」：打拍键 / 右键现在按着还是松开了（只在变化时发一次）
+        registrar.playToServer(
+                QteHoldPayload.TYPE,
+                QteHoldPayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(() -> {
+                    if (context.player() instanceof ServerPlayer player) {
+                        BrainrotQte.setHolding(player, payload.holding());
                     }
                 }));
         // 「强制开始链路」：空包，服务端自己看玩家戴的是哪顶帽子
@@ -135,13 +162,28 @@ public final class HatNetwork {
                 QteDodgePayload.STREAM_CODEC,
                 (payload, context) -> context.enqueueWork(
                         () -> com.hatmod.client.BrainrotQteClient.onDodge()));
+        // 「声波放出来了」：黑白闪 + 锁视线跟着这一包一起开始
+        registrar.playToClient(
+                SonicFlashPayload.TYPE,
+                SonicFlashPayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(
+                        () -> com.hatmod.client.SonicFlash.start(
+                                payload.monoTicks(), payload.lockTicks())));
         // 「打拍」的状态回包：连击数 + 最近一次判定，HUD 拿它画判定条
         registrar.playToClient(
                 QteStatePayload.TYPE,
                 QteStatePayload.STREAM_CODEC,
                 (payload, context) -> context.enqueueWork(
                         () -> com.hatmod.client.BrainrotQteClient.onState(
-                                payload.combo(), payload.rating(), payload.dodges())));
+                                payload.combo(), payload.rating(), payload.dodges(), payload.acc(),
+                                payload.score(), payload.misses(), payload.hits(),
+                                payload.perfects(), payload.goods(), payload.judgedTick())));
+        // 木棍右键：切换动作 2 舞曲的静音（声音在客户端放，服务端只转告本人）
+        registrar.playToClient(
+                TetoMusicPayload.TYPE,
+                TetoMusicPayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(
+                        () -> com.hatmod.client.TetoDanceMusic.onServerToggle()));
     }
 
     /** 通知客户端某个戴帽者「开始/停止照射」，以及它锁定了谁（每道光柱一个 id）。 */
@@ -165,10 +207,34 @@ public final class HatNetwork {
 
     /** 「打拍」的最新判定（连击 / PERFECT-GOOD-MISS）：只发给戴帽者自己，HUD 用它画判定字。 */
     public static void sendQteState(ServerPlayer player, int combo, int rating, int dodges) {
-        PacketDistributor.sendToPlayer(player, new QteStatePayload(combo, rating, dodges));
+        sendQteState(player, combo, rating, dodges, -1);
+    }
+
+    /**
+     * 同上，外加 {@code judgedTick}：这一记判定落在谱面的哪一拍（刻）。
+     *
+     * <p>HUD 靠它给**正确的那颗键**上色 —— 以前只发一个「刚判了一下」，客户端拿到达时刻
+     * 去就近猜，MISS 经常被画到下一颗键上（那颗其实还没按）。
+     * {@code -1} = 不带（连击里程碑之类的包），客户端退回就近猜。
+     */
+    public static void sendQteState(ServerPlayer player, int combo, int rating, int dodges,
+                                    int judgedTick) {
+        PacketDistributor.sendToPlayer(player, new QteStatePayload(combo, rating, dodges,
+                com.hatmod.BrainrotQte.accOf(player.getUUID()),
+                com.hatmod.BrainrotQte.scoreOf(player.getUUID()),
+                com.hatmod.BrainrotQte.missesOf(player.getUUID()),
+                com.hatmod.BrainrotQte.hitsOf(player.getUUID()),
+                com.hatmod.BrainrotQte.perfectsOf(player.getUUID()),
+                com.hatmod.BrainrotQte.goodsOf(player.getUUID()),
+                judgedTick));
     }
 
     /** 客户端：按了一下打拍（带 HUD 的钟走到几刻）。 */
+    /** 「声波放出来了」：黑白闪 + 锁视线跟着这一包一起开始，没放出来就都不给。 */
+    public static void sendSonicFlash(ServerPlayer player, int monoTicks, int lockTicks) {
+        PacketDistributor.sendToPlayer(player, new SonicFlashPayload(monoTicks, lockTicks));
+    }
+
     /** 「闪避落空」：只告诉挨打的那一个玩家，让他的屏幕闪一下紫边。 */
     public static void sendQteDodge(ServerPlayer player) {
         PacketDistributor.sendToPlayer(player, new QteDodgePayload());
@@ -177,6 +243,11 @@ public final class HatNetwork {
     /** 客户端：按 P 请求强制开一轮（不看附近有没有敌人）。 */
     public static void sendForceStart() {
         PacketDistributor.sendToServer(new ForceStartPayload());
+    }
+
+    /** 客户端回执：这位戴帽者的 BGM 已经真的响起来了（白帽的蓄力等这一拍才开始倒数）。 */
+    public static void sendMusicStarted(int wearerId) {
+        PacketDistributor.sendToServer(new MusicStartedPayload(wearerId));
     }
 
     /**
@@ -194,6 +265,11 @@ public final class HatNetwork {
 
     public static void sendQteTap(int clientAge) {
         PacketDistributor.sendToServer(new QteTapPayload(clientAge));
+    }
+
+    /** 客户端：打拍键 / 右键现在是按下还是松开了（只在变化时发一次）。 */
+    public static void sendQteHold(boolean holding) {
+        PacketDistributor.sendToServer(new QteHoldPayload(holding));
     }
 
     /** 客户端：调参器里切换「自动打拍」。 */
@@ -227,6 +303,11 @@ public final class HatNetwork {
         PacketDistributor.sendToPlayer(player, new MusicPayload(wearerId, ordinal, playing));
     }
 
+    /** 通知某个玩家：他把 Teto 的舞曲静音 / 恢复了（切换动作由客户端自己做）。 */
+    public static void sendTetoMusicToggle(ServerPlayer player) {
+        PacketDistributor.sendToPlayer(player, new TetoMusicPayload());
+    }
+
     /**
      * 通知某个玩家：开始一段黑白「预知」画面，持续 {@code ticks} 刻。
      *
@@ -251,13 +332,17 @@ public final class HatNetwork {
     /** 把当前参数发给一个玩家（登录时、以及改完参数后给编辑者回执）。 */
     public static void sendSettings(ServerPlayer player, int feedback) {
         PacketDistributor.sendToPlayer(player, new SettingsSyncPayload(snapshot(), HatSettings.ownBgmPriority(),
-                HatSettings.forceBreak(), routeSnapshot(), HatSettings.brainrotDamageScale(), feedback));
+                HatSettings.forceBreak(), routeSnapshot(),
+                HatSettings.brainrotDamageScale(), HatSettings.brainrotPercentScale(),
+                HatSettings.tetoVanishChance(), feedback));
     }
 
     /** 广播给所有人（feedback = 无提示）。 */
     public static void broadcastSettings() {
         PacketDistributor.sendToAllPlayers(new SettingsSyncPayload(snapshot(), HatSettings.ownBgmPriority(),
-                HatSettings.forceBreak(), routeSnapshot(), HatSettings.brainrotDamageScale(), FEEDBACK_NONE));
+                HatSettings.forceBreak(), routeSnapshot(),
+                HatSettings.brainrotDamageScale(), HatSettings.brainrotPercentScale(),
+                HatSettings.tetoVanishChance(), FEEDBACK_NONE));
     }
 
     /**
@@ -269,7 +354,8 @@ public final class HatNetwork {
                                           float healthDamageFloor, String damageType,
                                           boolean ownBgmPriority, boolean forceBreak,
                                           float routeBlack, float routeWhite, float routeRed,
-                                          String forcedRoute, float brainrotDamageScale) {
+                                          String forcedRoute, float brainrotDamageScale,
+                                          float brainrotPercentScale, float tetoVanishChance) {
         // 客户端也留一行日志：排查「点了保存没生效」时，先看日志里有没有这一行，
         // 就能分清到底是「按钮没点到」还是「包没到服务端」。
         HatMod.LOGGER.info("[HatMod] 发出调参请求：{} 蓄力 {}t，照射 {}t，固定伤害 {}，附加 {}，下限 {}，类型 {}，"
@@ -278,7 +364,8 @@ public final class HatNetwork {
                 ownBgmPriority, routeBlack, routeWhite, routeRed, forcedRoute, brainrotDamageScale);
         PacketDistributor.sendToServer(new SettingsUpdatePayload(type.ordinal(), chargeTicks, flashTicks,
                 damagePerTick, healthDamageRatio, healthDamageFloor, damageType,
-                ownBgmPriority, forceBreak, routeBlack, routeWhite, routeRed, forcedRoute, brainrotDamageScale));
+                ownBgmPriority, forceBreak, routeBlack, routeWhite, routeRed, forcedRoute,
+                brainrotDamageScale, brainrotPercentScale, tetoVanishChance));
     }
 
     /** 「全」路线相关的只读快照：三条帧伤 + 强制路线。 */
@@ -322,6 +409,8 @@ public final class HatNetwork {
         HatSettings.setRouteDamage(payload.routeBlack(), payload.routeWhite(), payload.routeRed());
         HatSettings.setForcedRoute(payload.forcedRoute());
         HatSettings.setBrainrotDamageScale(payload.brainrotDamageScale());
+        HatSettings.setBrainrotPercentScale(payload.brainrotPercentScale());
+        HatSettings.setTetoVanishChance(payload.tetoVanishChance());
         HatMod.LOGGER.info("[HatMod] {} 参数已更新：蓄力 {}t，照射 {}t，固定伤害 {}，附加 {}，下限 {}，类型 {}；"
                         + "自己的BGM优先 {}；路线帧伤 黑{} 白{} 红{}，强制路线 {}；脑蚀倍率 {}",
                 type.id(), HatSettings.chargeTicks(type), HatSettings.flashTicks(type),
@@ -508,7 +597,8 @@ public final class HatNetwork {
     }
 
     public record SettingsSyncPayload(List<Snapshot> snapshots, boolean ownBgmPriority, boolean forceBreak,
-                                      RouteSnapshot route, float brainrotDamageScale, int feedback)
+                                      RouteSnapshot route, float brainrotDamageScale,
+                                      float brainrotPercentScale, float tetoVanishChance, int feedback)
             implements CustomPacketPayload {
 
         /** 一顶帽子的参数快照；ordinal 对应 {@link HatType} 的序号。 */
@@ -531,6 +621,8 @@ public final class HatNetwork {
             buf.writeFloat(payload.route().red());
             buf.writeUtf(payload.route().forcedRoute());
             buf.writeFloat(payload.brainrotDamageScale());
+            buf.writeFloat(payload.brainrotPercentScale());
+            buf.writeFloat(payload.tetoVanishChance());
             buf.writeVarInt(payload.snapshots().size());
             for (Snapshot snapshot : payload.snapshots()) {
                 buf.writeVarInt(snapshot.ordinal());
@@ -549,13 +641,16 @@ public final class HatNetwork {
             boolean forceBreak = buf.readBoolean();
             RouteSnapshot route = new RouteSnapshot(buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf());
             float brainrotDamageScale = buf.readFloat();
+            float brainrotPercentScale = buf.readFloat();
+            float tetoVanishChance = buf.readFloat();
             int size = buf.readVarInt();
             List<Snapshot> list = new ArrayList<>(size);
             for (int i = 0; i < size; i++) {
                 list.add(new Snapshot(buf.readVarInt(), buf.readVarInt(), buf.readVarInt(),
                         buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf()));
             }
-            return new SettingsSyncPayload(list, ownBgmPriority, forceBreak, route, brainrotDamageScale, feedback);
+            return new SettingsSyncPayload(list, ownBgmPriority, forceBreak, route,
+                    brainrotDamageScale, brainrotPercentScale, tetoVanishChance, feedback);
         }
 
         @Override
@@ -570,7 +665,8 @@ public final class HatNetwork {
                                         float healthDamageFloor, String damageType,
                                         boolean ownBgmPriority, boolean forceBreak,
                                         float routeBlack, float routeWhite, float routeRed,
-                                        String forcedRoute, float brainrotDamageScale)
+                                        String forcedRoute, float brainrotDamageScale,
+                                        float brainrotPercentScale, float tetoVanishChance)
             implements CustomPacketPayload {
 
         public static final CustomPacketPayload.Type<SettingsUpdatePayload> TYPE =
@@ -594,13 +690,15 @@ public final class HatNetwork {
             buf.writeFloat(payload.routeRed());
             buf.writeUtf(payload.forcedRoute());
             buf.writeFloat(payload.brainrotDamageScale());
+            buf.writeFloat(payload.brainrotPercentScale());
+            buf.writeFloat(payload.tetoVanishChance());
         }
 
         private static SettingsUpdatePayload read(RegistryFriendlyByteBuf buf) {
             return new SettingsUpdatePayload(buf.readVarInt(), buf.readVarInt(), buf.readVarInt(),
                     buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf(),
                     buf.readBoolean(), buf.readBoolean(), buf.readFloat(), buf.readFloat(), buf.readFloat(),
-                    buf.readUtf(), buf.readFloat());
+                    buf.readUtf(), buf.readFloat(), buf.readFloat(), buf.readFloat());
         }
 
         @Override
@@ -710,20 +808,62 @@ public final class HatNetwork {
     }
 
     /**
+     * 「按住」状态（C2S）：长音按住的判定要用它 ——
+     * 以前长音一进来就自动涨连击，等于「按没按都一样」。
+     */
+    public record QteHoldPayload(boolean holding) implements CustomPacketPayload {
+
+        public static final CustomPacketPayload.Type<QteHoldPayload> TYPE =
+                new CustomPacketPayload.Type<>(HatMod.id("qte_hold"));
+
+        public static final StreamCodec<RegistryFriendlyByteBuf, QteHoldPayload> STREAM_CODEC =
+                StreamCodec.composite(
+                        ByteBufCodecs.BOOL, QteHoldPayload::holding,
+                        QteHoldPayload::new);
+
+        @Override
+        public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    /**
      * 「打拍」的最新状态（S2C）：连击数 + 最近一次判定（PERFECT / GOOD / MISS）。
      * 只在判定发生（或 MISS）时发一次，HUD 拿它画判定字。
      */
-    public record QteStatePayload(int combo, int rating, int dodges) implements CustomPacketPayload {
+    public record QteStatePayload(int combo, int rating, int dodges, int acc,
+                                  int score, int misses, int hits,
+                                  int perfects, int goods, int judgedTick)
+            implements CustomPacketPayload {
 
         public static final CustomPacketPayload.Type<QteStatePayload> TYPE =
                 new CustomPacketPayload.Type<>(HatMod.id("qte_state"));
 
+        /**
+         * 九个计数**手写**：{@code StreamCodec.composite} 最多只拼 6 个，
+         * 后面还要加字段（得分 / MISS / 踩对数 / 判定统计）就得上手写。
+         */
         public static final StreamCodec<RegistryFriendlyByteBuf, QteStatePayload> STREAM_CODEC =
-                StreamCodec.composite(
-                        ByteBufCodecs.VAR_INT, QteStatePayload::combo,
-                        ByteBufCodecs.VAR_INT, QteStatePayload::rating,
-                        ByteBufCodecs.VAR_INT, QteStatePayload::dodges,
-                        QteStatePayload::new);
+                StreamCodec.of(QteStatePayload::write, QteStatePayload::read);
+
+        private static void write(RegistryFriendlyByteBuf buf, QteStatePayload payload) {
+            buf.writeVarInt(payload.combo());
+            buf.writeVarInt(payload.rating());
+            buf.writeVarInt(payload.dodges());
+            buf.writeVarInt(payload.acc());
+            buf.writeVarInt(payload.score());
+            buf.writeVarInt(payload.misses());
+            buf.writeVarInt(payload.hits());
+            buf.writeVarInt(payload.perfects());
+            buf.writeVarInt(payload.goods());
+            buf.writeVarInt(payload.judgedTick());
+        }
+
+        private static QteStatePayload read(RegistryFriendlyByteBuf buf) {
+            return new QteStatePayload(buf.readVarInt(), buf.readVarInt(), buf.readVarInt(),
+                    buf.readVarInt(), buf.readVarInt(), buf.readVarInt(), buf.readVarInt(),
+                    buf.readVarInt(), buf.readVarInt(), buf.readVarInt());
+        }
 
         @Override
         public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
@@ -735,6 +875,48 @@ public final class HatNetwork {
      * 「闪避落空」的通知（S2C，空包）：只发给被闪掉这一击的玩家，
      * HUD 收到就画一整屏紫边 + 大字「闪避」。
      */
+    public record TetoMusicPayload() implements CustomPacketPayload {
+
+        public static final CustomPacketPayload.Type<TetoMusicPayload> TYPE =
+                new CustomPacketPayload.Type<>(HatMod.id("teto_music_toggle"));
+
+        public static final StreamCodec<RegistryFriendlyByteBuf, TetoMusicPayload> STREAM_CODEC =
+                StreamCodec.unit(new TetoMusicPayload());
+
+        @Override
+        public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    /**
+     * 客户端 -> 服务端：这位戴帽者的 BGM **真的响起来了**（声音引擎把它排上了）。
+     *
+     * <p>白帽的蓄力要等这一下才开始倒数 —— 光柱落在音乐哪一拍就是设计里的那一拍，
+     * 第二轮、第三轮也一样。
+     */
+    public record MusicStartedPayload(int wearerId) implements CustomPacketPayload {
+
+        public static final CustomPacketPayload.Type<MusicStartedPayload> TYPE =
+                new CustomPacketPayload.Type<>(HatMod.id("music_started"));
+
+        public static final StreamCodec<RegistryFriendlyByteBuf, MusicStartedPayload> STREAM_CODEC =
+                StreamCodec.of(MusicStartedPayload::write, MusicStartedPayload::read);
+
+        private static void write(RegistryFriendlyByteBuf buf, MusicStartedPayload payload) {
+            buf.writeVarInt(payload.wearerId());
+        }
+
+        private static MusicStartedPayload read(RegistryFriendlyByteBuf buf) {
+            return new MusicStartedPayload(buf.readVarInt());
+        }
+
+        @Override
+        public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
     public record QteDodgePayload() implements CustomPacketPayload {
 
         public static final CustomPacketPayload.Type<QteDodgePayload> TYPE =
@@ -742,6 +924,35 @@ public final class HatNetwork {
 
         public static final StreamCodec<RegistryFriendlyByteBuf, QteDodgePayload> STREAM_CODEC =
                 StreamCodec.unit(new QteDodgePayload());
+
+        @Override
+        public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    /**
+     * 「声波放出来了」（S2C）：带黑白闪 / 锁视线各多少刻。
+     *
+     * <p>声波现在要踩中那一拍才放（{@code BrainrotCycle.onNoteHit}），
+     * 所以这两个效果也改成跟着这条包走 —— 打空了就一样都不给。
+     */
+    public record SonicFlashPayload(int monoTicks, int lockTicks) implements CustomPacketPayload {
+
+        public static final CustomPacketPayload.Type<SonicFlashPayload> TYPE =
+                new CustomPacketPayload.Type<>(HatMod.id("sonic_flash"));
+
+        public static final StreamCodec<RegistryFriendlyByteBuf, SonicFlashPayload> STREAM_CODEC =
+                StreamCodec.of(SonicFlashPayload::write, SonicFlashPayload::read);
+
+        private static void write(RegistryFriendlyByteBuf buf, SonicFlashPayload payload) {
+            buf.writeVarInt(payload.monoTicks());
+            buf.writeVarInt(payload.lockTicks());
+        }
+
+        private static SonicFlashPayload read(RegistryFriendlyByteBuf buf) {
+            return new SonicFlashPayload(buf.readVarInt(), buf.readVarInt());
+        }
 
         @Override
         public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {

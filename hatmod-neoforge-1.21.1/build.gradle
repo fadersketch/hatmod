@@ -3,7 +3,7 @@ plugins {
     id 'net.neoforged.moddev' version '2.0.148'
 }
 
-version = '1.3.0'
+version = '1.4.0'
 group = 'com.hatmod'
 base {
     archivesName = 'hatmod-neoforge-1.21.1'
@@ -59,4 +59,21 @@ tasks.withType(JavaCompile).configureEach {
 
 tasks.named('processResources', ProcessResources).configure {
     duplicatesStrategy = DuplicatesStrategy.INCLUDE
+}
+
+jar {
+    // 破防守护走 Mixin（hatmod.mixins.json），不用 ITransformationService ——
+    // 带 services 文件的 jar 会被提前进 PLUGIN/SERVICE 层，那一层看不到 GAME 层的
+    // Minecraft 类，注入代码一执行就 NoClassDefFoundError（1.5.202 的坏档根因）。
+    manifest {
+        attributes([
+                'Specification-Title'     : 'hatmod',
+                'Specification-Vendor'    : 'HatMod',
+                'Specification-Version'   : '1',
+                'Implementation-Title'    : project.name,
+                'Implementation-Version'  : project.version,
+                'Implementation-Vendor'   : 'HatMod',
+                'MixinConfigs'            : 'hatmod.mixins.json'
+        ])
+    }
 }

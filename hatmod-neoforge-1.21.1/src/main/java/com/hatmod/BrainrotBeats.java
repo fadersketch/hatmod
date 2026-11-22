@@ -26,122 +26,424 @@ public final class BrainrotBeats {
      * 「Nope」「too」「late」三声**各自开口的那一刻**（按能量包络切出来的音节边界），
      * 不是平均分出来的 —— 词和词之间大约隔 0.44 秒。
      */
-    public static final int NO_TOO_LATE_FIRST = 260;
-    public static final int NO_TOO_LATE_SECOND = 1398;
+    /**
+     * 前奏的终点：原曲 21.358 秒 = 427 刻。**这是两条链路的分界**。
+     *
+     * <p>0 – 427：前奏链路（整段黑暗、不给加成、按拍击退）；
+     * 427 之后：正片链路，所有时间点都用 {@link #main(int)} 表达成「正片自己的第几刻」。
+     */
+    public static final int INTRO_END = 427;
+
+    /** 正片链路的第 {@code tick} 刻，落在绝对时间轴的第几刻。 */
+    public static int main(int tick) {
+        return tick + INTRO_END;
+    }
+
+    public static final int NO_TOO_LATE_FIRST = main(260);
+    public static final int NO_TOO_LATE_SECOND = main(1398);
     /** 一个词隔多少刻（= 倒计时 READY / SET / GO 的间隔）：9 刻 ≈ 0.45 秒，和口白的实际语速一致。 */
     public static final int SPEECH_STEP = 9;
     /** 那三个白键对应的词：按中之后判定字直接写这个词（不再写 3 / 2 / 1）。 */
     public static final String[] SPEECH_WORDS = {"Nope", "too", "late"};
-    /** 台词拍前后多少刻内的**鼓点**要挪走（那一拍是鼓，不是那三个词）。 */
-    private static final int SPEECH_WINDOW = 4;
-
-    /** 全曲拍点（刻，从这一轮开始计时；20 刻 = 1 秒）。台词那三拍是手工塞进去的实键。 */
-    private static final int[] TICKS = buildChart(new int[] {
-            6, 15, 24, 32, 41, 50, 59, 68, 77, 86, 94, 103,
-            112, 121, 130, 139, 148, 156, 165, 174, 181, 192, 201, 208,
-            218, 227, 235, 244, 254, 263, 272, 280, 288, 297, 306, 315,
-            324, 333, 342, 350, 359, 368, 377, 386, 395, 404, 413, 421,
-            430, 439, 448, 457, 466, 475, 484, 493, 502, 510, 519, 528,
-            537, 546, 554, 564, 572, 581, 590, 599, 608, 617, 626, 635,
-            644, 653, 662, 671, 679, 688, 697, 704, 715, 724, 733, 741,
-            750, 759, 768, 777, 786, 795, 804, 813, 822, 830, 840, 848,
-            856, 866, 875, 884, 893, 901, 910, 919, 928, 937, 946, 955,
-            964, 973, 982, 989, 999, 1008, 1017, 1026, 1035, 1044, 1053, 1061,
-            1070, 1079, 1088, 1097, 1106, 1115, 1122, 1133, 1140, 1148, 1157, 1168,
-            1177, 1184, 1194, 1203, 1212, 1219, 1228, 1239, 1246, 1255, 1264, 1272,
-            1281, 1290, 1299, 1306, 1317, 1326, 1333, 1341, 1352, 1361, 1368, 1377,
-            1388, 1396, 1405, 1414, 1423, 1430, 1439, 1451, 1457, 1466, 1477, 1486,
-            1493, 1502, 1511, 1519, 1528, 1537, 1546, 1555, 1565, 1573, 1582, 1590,
-            1599, 1608, 1617, 1626, 1635, 1644, 1653, 1662, 1670, 1679, 1689, 1697,
-            1706, 1715, 1724, 1732, 1741, 1751, 1759, 1768, 1777, 1786, 1795, 1804,
-            1813, 1822, 1829, 1839, 1848, 1857, 1866, 1875, 1884, 1892, 1902, 1910,
-            1919, 1928, 1937, 1946, 1955, 1964, 1971, 1982, 1990, 1999, 2008, 2016,
-            2025, 2034, 2043, 2052, 2061, 2070, 2078, 2087, 2096, 2105,
-    });
+    /**
+     * 台词拍前后多少刻内的**普通键**要挪走：±10 刻（0.5 秒）。
+     *
+     * <p>原来是 ±4，只躲开了「同一个鼓点」。但整句「Nope / too / late」本来就该把舞台让给字幕
+     * 和 Teto 的动作（这三拍由服务端代按），前后留白 0.5 秒，词才砸得干净。
+     */
+    private static final int SPEECH_WINDOW = 10;
 
     /**
-     * 把鼓点网格整理成真正的谱面。
+     * 最后一个词打完后再留多少刻就收掉字幕（含它带出来的那些「隐藏」）。
      *
-     * <p>规则：
+     * <p>原来是 26 刻（1.3 秒），整段收得偏晚；改成 16 刻（0.8 秒），正好提前 0.5 秒。
+     * HUD 藏条、药水粒子、Teto 的负面场都读 {@link #speechAnchor}，跟着一起收。
+     */
+    public static final int SPEECH_TAIL = 6;
+
+    /**
+     * 拍网格（只给 HUD 画重音 / 判定条呼吸用，不再参与排谱）。
+     *
+     * <p>新谱面直接落在两条分轨的真实起音上，所以网格精度不再决定手感；这里仍保留
+     * 原来拟合出来的 135.48 BPM 网格，让「小节头」的高亮和旧版视觉一致。
+     */
+    private static final double BEAT_TICKS = 8.8573D;
+    /** 正片的拍网格原点（原曲实测 5.865 刻），落在绝对轴上要加前奏长度。 */
+    private static final double BEAT_ORIGIN = 5.865D + INTRO_END;
+
+    /** 这一刻在不在前奏里（前奏链路）。 */
+    public static boolean inIntro(int age) {
+        return age >= 0 && age < INTRO_END;
+    }
+
+    /**
+     * 打拍的起手拍：**「NOPE」出声那一刻**（13 秒 = 260 刻）。
+     *
+     * <p>READY / SET / GO 和 NOPE / too / late 同刻（260 / 269 / 278），
+     * 这三个词本身也已经写进拍表，所以从第一个词起，词到、键也到。
+     */
+    public static final int SCORE_START_TICK = main(260);
+
+    /**
+     * 最后一个真实鼓点（约 99.1 秒）。
+     *
+     * <p>**必须声明在 {@link #VOCAL} 之前**：它不再是一个字面量，静态初始化时
+     * {@code buildVocal} 要读它；写在后面的话读到的还是 0，整张人声谱会被过滤光。
+     */
+    public static final int SCORE_TO = main(1999);
+
+    /** 光束阶段：28.5–57 秒、71–100 秒（和 {@code BrainrotCycle.FIRE_START} 那几个数对齐）。 */
+    private static final int BEAM_START = main(574);
+    private static final int BEAM_END = main(1140);
+    private static final int BEAM2_START = main(1420);
+    private static final int BEAM2_END = main(2000);
+
+    /** 最后一段黑暗从这一该开始（100 秒）：从这里起不再放键，判定条慢慢淡出。 */
+    public static final int FINAL_DARK = main(2000);
+
+    /** 示范长音：11 秒末尾起，一直拖到 No too late 的第一个实体拍（只是示范，不算分）。 */
+    public static final int LEAD_HOLD_START = main(220);
+
+    /**
+     * 正片链路的第一次人声（HUD 的显形、READY / SET / GO 都从这里算）。
+     *
+     * <p>**只认 {@link #INTRO_END} 之后的唱词**：前奏里也有三句词，但前奏是另一条链路
+     * （全程黑暗、不给加成、按拍击退），判定条和节拍板不该被提前拉进黑屏里。
+     */
+    public static int firstVocalTick() {
+        for (int packed : VOCAL) {
+            int tick = packed >>> 8;
+            if (tick >= INTRO_END) {
+                return tick;
+            }
+        }
+        return SCORE_FROM;
+    }
+
+    /** 一拍取整多少刻（8.8573 → 9）。 */
+    private static final int BEAT_ROUND = (int) Math.round(BEAT_TICKS);
+
+    /** 前奏 HUD 的淡入时长：3 秒。 */
+    public static final int HUD_FADE_TICKS = 60;
+
+    /**
+     * 前奏的第一句人声（144 刻 = 7.2 秒）。
+     *
+     * <p>**这是前奏链路自己的开场**，不是正片那句（{@link #firstVocalTick()}）。
+     * 前奏的条、歌词、倒计时、演示键全部围着它排。
+     */
+    public static int introVocalTick() {
+        for (int packed : VOCAL) {
+            int tick = packed >>> 8;
+            if (tick < INTRO_END) {
+                return tick;
+            }
+        }
+        return INTRO_END;
+    }
+
+    /** HUD 完全就绪的那一刻：人声之前 2 拍 —— 条、打拍反馈、歌词到这里必须全部亮满。 */
+    public static int hudReadyTick() {
+        return introVocalTick() - 2 * BEAT_ROUND;
+    }
+
+    /** HUD 开始淡入：就绪前 {@link #HUD_FADE_TICKS} 刻。 */
+    public static int hudStartTick() {
+        return hudReadyTick() - HUD_FADE_TICKS;
+    }
+
+    /** 倒计时的词数（READY / SET / GO）。 */
+    public static final int COUNTDOWN_WORDS = 3;
+
+    /** 倒计时第一个词离人声几拍：4 拍起，GO 正好落在人声前 2 拍。 */
+    public static final int COUNTDOWN_LEAD_BEATS = 4;
+
+    /** 倒计时第 {@code i} 个词落在第几刻：一拍一个，一个接一个。 */
+    public static int countdownTick(int i) {
+        return introVocalTick() - (COUNTDOWN_LEAD_BEATS - i) * BEAT_ROUND;
+    }
+
+    /** 演示键只有 2 个：人声之前的那 2 拍。 */
+    public static final int DEMO_BEATS = 2;
+
+    /** 第 {@code i} 个演示键（0 = 离人声最近的那一拍）。 */
+    public static int demoTick(int i) {
+        return introVocalTick() - (DEMO_BEATS - i) * BEAT_ROUND;
+    }
+
+    /**
+     * 这一拍是不是**人声**（谱面里贴上人声轨起音的那些键）。
+     *
+     * <p>不是人声的就是间奏补进来的乐器 / 鼓点 —— HUD 用另一种颜色画，一眼分得出
+     * 「这一下是唱词」还是「这一下是鼓」。
+     */
+    public static boolean isVocal(int tick) {
+        return contains(CHART_VOCAL, tick);
+    }
+
+    /** 有序 int 表里有没有 {@code tick}。 */
+    private static boolean contains(int[] sorted, int tick) {
+        int lo = 0;
+        int hi = sorted.length - 1;
+        while (lo <= hi) {
+            int mid = (lo + hi) >>> 1;
+            int value = sorted[mid];
+            if (value < tick) {
+                lo = mid + 1;
+            } else if (value > tick) {
+                hi = mid - 1;
+            } else {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 这一刻是不是小节头（每 4 拍一下）。
+     *
+     * <p>HUD 用它把重音画得更高一档：音游里「看得出哪下是重音」比「音符一样粗」重要得多。
+     */
+    public static boolean isBarBeat(int tick) {
+        double beat = (tick - BEAT_ORIGIN) / BEAT_TICKS;
+        long nearest = Math.round(beat);
+        return Math.abs(beat - nearest) < 0.12D && (nearest & 3L) == 0L;
+    }
+
+    /**
+     * 人声键：{@code (tick << 8) | 拍长}，从 {@link BrainrotLyrics} 的 QRC 逐字表直接推出来。
+     *
+     * <p>规则：拉丁字母连成的一段算**一个**键（Warning? / Don't / worry 各一下，
+     * 而不是一个字母一下），日文按字；标点、空格、长音符号跳过。
+     * 这就是「按歌词排谱」—— 键跟的是嗓子，不是鼓。
+     */
+    private static final int[] VOCAL = buildVocal();
+
+    /**
+     * 长音表（刻，{start, end}）：谱面编辑器导出的那一份（{@code chart (13).json}）。
+     *
+     * <p>导入时会做一次清理：间距 ≤ 1 刻的长音并成一根，夹在合并后区间里的短键全部去掉
+     * （见 {@link #TICKS} 的说明）。这一版导出得干净 —— 41 根长音彼此不重叠、缝里也没有
+     * 短键，清理规则保留着，下一版换谱面照样跑。
+     *
+     * <p>前奏段里的长音也保留（只画、前奏不计分），计分段内的照常判。
+     */
+    private static final int[][] HOLDS = {
+            {199, 205}, {207, 214}, {278, 286}, {358, 373},
+            {419, 430}, {440, 449}, {450, 458}, {462, 471},
+            {472, 484}, {497, 502}, {514, 523}, {524, 530},
+            {537, 546}, {547, 554}, {585, 591}, {592, 599},
+            {606, 613}, {614, 620}, {641, 677}, {774, 783},
+            {840, 852}, {928, 943}, {991, 999}, {1054, 1065},
+            {1125, 1137}, {1215, 1229}, {1288, 1299}, {1578, 1586},
+            {1587, 1595}, {1600, 1610}, {1611, 1620}, {1632, 1641},
+            {1654, 1659}, {1660, 1667}, {1672, 1681}, {1682, 1689},
+            {1722, 1728}, {1729, 1736}, {1747, 1758}, {1777, 1810},
+            {1905, 1915}, {1976, 1989}, {2064, 2078}, {2125, 2135},
+            {2190, 2200}, {2260, 2272}, {2350, 2364}, {2411, 2424},
+    };
+
+    /** 一共几根长音。 */
+    public static final int HOLD_COUNT = HOLDS.length;
+
+    /**
+     * 全曲拍点（刻，从这一轮开始计时；20 刻 = 1 秒）。
+     *
+     * <p>这一版是**谱面编辑器**导出的主旋律谱（{@code chart (13).json}）：
      * <ul>
-     *   <li>台词那三拍（260 / 269 / 278、1398 / 1407 / 1416）附近 {@link #SPEECH_WINDOW} 刻内
-     *       的鼓点先挪走 —— 那几个词才是这一段该按的东西；</li>
-     *   <li>长音（含前奏那根示范长音）里面不放别的键，整段是一根长条；</li>
-     *   <li>计分段之后（{@code > SCORE_TO}）不再放键，否则会看到「按不掉」的键；</li>
-     *   <li>最后把台词那六个口头拍原样塞回去，和 READY / SET / GO 同刻。</li>
+     *   <li>人声键按歌者的起唱点排，HUD 画成红色；伴奏键画成灰色，两者由
+     *       {@link #CHART_VOCAL} 区分；</li>
+     *   <li>「Nope / too / late」六个口白键照旧由服务端代按，前后 0.5 秒清空；</li>
+     *   <li>这一版没有夹在长音里的短键（导入时仍会做一次合并清理，见 {@link #HOLDS}）；</li>
+     *   <li>有五处挨得很近的键：458/461、532/535、559/562、1598/1600、1669/1672，
+     *       最短只差 2 刻 —— 判定窗会自动收窄（最短到 {@code MIN_WINDOW} 的 ±3 刻，
+     *       见 {@link #buildWindows()}）。</li>
      * </ul>
      */
-    private static int[] buildChart(int[] source) {
-        java.util.List<Integer> out = new java.util.ArrayList<>();
-        for (int tick : source) {
-            if (nearSpeech(tick)) {
-                continue;
+    private static final int[] TICKS = {
+            150, 154, 159, 163, 167, 172, 176, 180, 185, 189, 194, 199,
+            207, 221, 225, 229, 234, 238, 243, 247, 252, 256, 261, 265,
+            270, 274, 278, 291, 296, 300, 305, 309, 314, 318, 322, 327,
+            331, 336, 340, 345, 350, 354, 358, 382, 386, 390, 399, 404,
+            408, 419, 440, 450, 459, 462, 472, 487, 493, 497, 514, 524,
+            532, 537, 547, 555, 559, 562, 567, 572, 585, 592, 602, 606,
+            614, 622, 628, 632, 637, 641, 723, 733, 743, 752, 759, 765,
+            770, 774, 793, 801, 810, 818, 826, 831, 836, 840, 864, 872,
+            880, 888, 898, 903, 907, 911, 915, 920, 924, 928, 953, 957,
+            961, 970, 975, 979, 991, 1008, 1015, 1023, 1031, 1041, 1045, 1050,
+            1054, 1077, 1086, 1094, 1103, 1112, 1116, 1121, 1125, 1148, 1156, 1165,
+            1174, 1183, 1188, 1192, 1197, 1201, 1206, 1210, 1215, 1237, 1241, 1246,
+            1255, 1259, 1264, 1275, 1288, 1578, 1587, 1598, 1600, 1611, 1623, 1627,
+            1632, 1654, 1660, 1669, 1672, 1682, 1691, 1696, 1700, 1705, 1712, 1718,
+            1722, 1729, 1742, 1747, 1759, 1763, 1768, 1772, 1777, 1857, 1865, 1873,
+            1882, 1892, 1896, 1901, 1905, 1928, 1936, 1945, 1953, 1963, 1967, 1972,
+            1976, 1999, 2007, 2016, 2025, 2034, 2038, 2043, 2048, 2052, 2056, 2060,
+            2064, 2088, 2092, 2097, 2106, 2111, 2115, 2125, 2142, 2150, 2159, 2167,
+            2176, 2181, 2186, 2190, 2212, 2220, 2229, 2238, 2247, 2251, 2256, 2260,
+            2284, 2292, 2300, 2310, 2319, 2323, 2328, 2332, 2336, 2341, 2346, 2350,
+            2373, 2377, 2381, 2390, 2395, 2399, 2411,
+    };
+
+    /**
+     * {@link #TICKS} 里哪些键是**人声**键（HUD 画成红色；其余是伴奏键，画成灰色）。
+     *
+     * <p>不能再拿 {@link #VOCAL} 直接比：新谱面的人声键是贴到人声轨起音上的，
+     * 和 QRC 的逐字时刻会差 1–3 刻；这张表就是贴完之后的那一份。
+     */
+    private static final int[] CHART_VOCAL = {
+            150, 154, 159, 163, 167, 172, 176, 180, 185, 189, 194, 199,
+            207, 221, 225, 229, 234, 238, 243, 247, 252, 256, 261, 265,
+            270, 274, 278, 291, 296, 300, 305, 309, 314, 318, 322, 327,
+            331, 336, 340, 345, 350, 354, 358, 419, 440, 450, 459, 462,
+            472, 487, 493, 497, 514, 524, 532, 537, 547, 555, 559, 562,
+            567, 572, 585, 592, 602, 606, 614, 622, 628, 632, 637, 641,
+            723, 733, 743, 752, 759, 765, 770, 774, 793, 801, 810, 818,
+            826, 831, 836, 840, 864, 872, 880, 888, 898, 903, 907, 911,
+            915, 920, 924, 928, 991, 1008, 1015, 1023, 1031, 1041, 1045, 1050,
+            1054, 1077, 1086, 1094, 1103, 1112, 1116, 1121, 1125, 1148, 1156, 1165,
+            1174, 1183, 1188, 1192, 1197, 1201, 1206, 1210, 1215, 1288, 1578, 1587,
+            1598, 1600, 1611, 1623, 1627, 1632, 1654, 1660, 1669, 1672, 1682, 1691,
+            1696, 1700, 1705, 1712, 1718, 1722, 1729, 1742, 1747, 1759, 1763, 1768,
+            1772, 1777, 1857, 1865, 1873, 1882, 1892, 1896, 1901, 1905, 1928, 1936,
+            1945, 1953, 1963, 1967, 1972, 1976, 1999, 2007, 2016, 2025, 2034, 2038,
+            2043, 2048, 2052, 2056, 2060, 2064, 2125, 2142, 2150, 2159, 2167, 2176,
+            2181, 2186, 2190, 2212, 2220, 2229, 2238, 2247, 2251, 2256, 2260, 2284,
+            2292, 2300, 2310, 2319, 2323, 2328, 2332, 2336, 2341, 2346, 2350, 2411,
+    };
+
+    /**
+     * 示范键（ghost）：只画不算分，和 {@link #TICKS} 分开存，所以不会进判定。
+     *
+     * <p>以前 HUD 用「427–687 刻」这个硬编码区间画示范键；现在改成一张显式的表，
+     * 编辑器可以把任意位置的键标成示范，导出时写进这里。
+     */
+    private static final int[] DEMO = {
+            24, 30, 59, 66, 96, 102, 128, 136, 1295, 1299, 1303, 1315,
+            1317, 1342, 1347, 1369, 1372, 1387, 1391, 1405, 1409, 1413, 1417, 1422,
+            1437, 1443, 1445, 1459, 1463, 1479, 1485, 1489, 1507, 1511, 1515, 1529,
+            1533, 1545, 1549, 1553, 1557, 1561, 1565,
+    };
+
+    /**
+     * 示范长音（刻，{start, end}）：和 {@link #HOLDS} 一样是长条，但只画不判。
+     *
+     * <p>编辑器里把一根长音设成「示范」就会导出到这里 —— HUD 画成白色虚线，
+     * 到点不消失、不计连击，用来教玩家「这一句要一直按住」。
+     */
+    private static final int[][] DEMO_HOLDS = {
+            {2, 15}, {38, 51}, {72, 87}, {108, 126},
+            {1307, 1312}, {1321, 1330}, {1333, 1339}, {1351, 1361},
+            {1377, 1385}, {1395, 1403}, {1426, 1435}, {1449, 1457},
+            {1467, 1475}, {1493, 1503}, {1519, 1528}, {1537, 1544},
+    };
+
+    /** 示范长音一共几根。 */
+    public static final int DEMO_HOLD_COUNT = DEMO_HOLDS.length;
+
+    /**
+     * 每一拍自己的判定窗（刻）：左右邻居隔得近就自动收紧。
+     *
+     * <p>原来一刀切 ±6 刻，可八分音符只隔 4.4 刻 —— 按晚一点就会被判到**下一拍**上，
+     * 手感是「粘」和「抢拍」。现在窗口收到邻居间隔的一半（最少 3 刻），谁的拍就归谁。
+     */
+    private static final int[] WINDOWS = buildWindows();
+    /** 判定窗上限（和 {@code BrainrotQte.GOOD_TICKS} 同一个数）。 */
+    private static final int MAX_WINDOW = 6;
+    /** 判定窗下限（刻）：以前是 2，连打处只剩 ±2 刻（±100ms），手感太硬。 */
+    private static final int MIN_WINDOW = 3;
+    /**
+     * 晚按的额外宽限（刻）。
+     *
+     * <p>人跟拍天然偏晚：眼睛看到键压线再动手，落地总会迟一两刻。以前早晚同宽，
+     * 压在窗尾那一半的按键全被当成「按空了」，紧接着过窗判成 MISS。现在早按还是
+     * ±窗口，晚按多给 {@link #LATE_GRACE} 刻，过窗判定也用这个加长后的窗。
+     */
+    public static final int LATE_GRACE = 3;
+
+    private static int[] buildWindows() {
+        int[] windows = new int[TICKS.length];
+        for (int i = 0; i < TICKS.length; i++) {
+            int gap = MAX_WINDOW * 2;
+            if (i > 0) {
+                gap = Math.min(gap, TICKS[i] - TICKS[i - 1]);
             }
-            if (tick > LEAD_HOLD_START && tick < SCORE_START_TICK) {
-                continue;
+            if (i + 1 < TICKS.length) {
+                gap = Math.min(gap, TICKS[i + 1] - TICKS[i]);
             }
-            // 两根长音里面都不放别的键：整段是一根长条
-            boolean inHold = false;
-            for (int h = 0; h < HOLD_COUNT; h++) {
-                if (tick > holdStart(h) && tick <= holdEnd(h)) {
-                    inHold = true;
-                    break;
+            windows[i] = Math.max(MIN_WINDOW, Math.min(MAX_WINDOW, gap / 2));
+        }
+        return windows;
+    }
+
+    /** 第 {@code index} 拍允许的偏差（刻）—— 早按那一侧。 */
+    public static int windowAt(int index) {
+        if (index < 0 || index >= WINDOWS.length) {
+            return MAX_WINDOW;
+        }
+        return WINDOWS[index];
+    }
+
+    /** 第 {@code index} 拍**晚按**的宽限（刻）：判定窗 + {@link #LATE_GRACE}。 */
+    public static int lateWindowAt(int index) {
+        return windowAt(index) + LATE_GRACE;
+    }
+
+    /** QRC 逐字表 → 人声键表（见 {@link #VOCAL}）。 */
+    private static int[] buildVocal() {
+        java.util.TreeMap<Integer, Integer> map = new java.util.TreeMap<>();
+        int lastTick = -1000;
+        for (int line = 0; line < BrainrotLyrics.count(); line++) {
+            int start = BrainrotLyrics.tickAt(line);
+            String text = BrainrotLyrics.textAt(line);
+            int[] cue = BrainrotLyrics.cue(line);
+            boolean inLatinRun = false;
+            for (int i = 0; i < cue.length && i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (isLatinLetter(c)) {
+                    if (inLatinRun) {
+                        continue;   // 同一个词里的后续字母，不另起一个键
+                    }
+                    inLatinRun = true;
+                } else if (isSingable(c)) {
+                    inLatinRun = false;
+                } else {
+                    continue;       // 标点 / 空格：不打断拉丁词
+                }
+                int tick = start + (cue[i] >>> 8) - BrainrotLyrics.CUE_BIAS;
+                int dur = cue[i] & 0xFF;
+                if (tick < 6 || tick > SCORE_TO) {
+                    continue;
+                }
+                // 同一口气里挤在 50ms 内的两个字（QRC 对齐的毛刺）只留第一个：
+                // 一个键 100ms 已经是最快的十六分了，再密就按不出来
+                if (tick - lastTick < 2) {
+                    continue;
+                }
+                lastTick = tick;
+                Integer last = map.get(tick);
+                if (last == null || dur > last) {
+                    map.put(tick, dur);
                 }
             }
-            if (inHold) {
-                continue;
-            }
-            if (tick > SCORE_TO) {
-                continue;
-            }
-            out.add(tick);
         }
-        densifyBeam(out);
-        for (int i = 0; i < 3; i++) {
-            out.add(NO_TOO_LATE_FIRST + i * SPEECH_STEP);
-            out.add(NO_TOO_LATE_SECOND + i * SPEECH_STEP);
-        }
-        java.util.Collections.sort(out);
-        int[] result = new int[out.size()];
-        for (int i = 0; i < result.length; i++) {
-            result[i] = out.get(i);
+        int[] result = new int[map.size()];
+        int i = 0;
+        for (java.util.Map.Entry<Integer, Integer> entry : map.entrySet()) {
+            result[i++] = (entry.getKey() << 8) | entry.getValue();
         }
         return result;
     }
 
-    /**
-     * 光束期加密：相邻两拍隔得够开的，中间补半拍 —— 光束在放的时候按键速度翻倍。
-     *
-     * <p>只动「鼓点」这一层：台词拍、长条、计分段之后的规则都不碰。
-     */
-    private static void densifyBeam(java.util.List<Integer> out) {
-        java.util.List<Integer> added = new java.util.ArrayList<>();
-        for (int i = 0; i + 1 < out.size(); i++) {
-            int a = out.get(i);
-            int b = out.get(i + 1);
-            // 本来就很密的（≤5 刻）不再塞，否则两拍会挤在一起
-            if (b - a < 6 || !inBeam(a)) {
-                continue;
-            }
-            int mid = a + (b - a) / 2;
-            if (mid > SCORE_TO || nearSpeech(mid)) {
-                continue;
-            }
-            boolean inHold = false;
-            for (int h = 0; h < HOLD_COUNT; h++) {
-                if (mid > holdStart(h) && mid <= holdEnd(h)) {
-                    inHold = true;
-                    break;
-                }
-            }
-            if (!inHold) {
-                added.add(mid);
-            }
+    private static boolean isLatinLetter(char c) {
+        return c < 0x3000 && Character.isLetter(c);
+    }
+
+    /** 能唱的字：不是空白、不是标点和长音符号。 */
+    private static boolean isSingable(char c) {
+        if (Character.isWhitespace(c)) {
+            return false;
         }
-        if (!added.isEmpty()) {
-            out.addAll(added);
-            java.util.Collections.sort(out);
-        }
+        return "（）()?!.,、。・'’\"“”「」ー…-—".indexOf(c) < 0;
     }
 
     /** 这一刻是不是落在光束阶段（给 HUD 换配色用）。 */
@@ -243,55 +545,16 @@ public final class BrainrotBeats {
         return -1;
     }
 
-    /** 这一拍是不是「Nope / too / late」六个口头拍附近的鼓点。 */
-    private static boolean nearSpeech(int tick) {
-        for (int i = 0; i < 3; i++) {
-            if (Math.abs(tick - (NO_TOO_LATE_FIRST + i * SPEECH_STEP)) <= SPEECH_WINDOW
-                    || Math.abs(tick - (NO_TOO_LATE_SECOND + i * SPEECH_STEP)) <= SPEECH_WINDOW) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     /**
-     * 打拍的起手拍：**「NOPE」出声那一刻**（13 秒 = 260 刻）。
+     * 计分的第一拍：**前奏结束后的第一个谱面键**。
      *
-     * <p>READY / SET / GO 和 NOPE / too / late 同刻（260 / 269 / 278），
-     * 这三个词本身也已经写进拍表，所以从第一个词起，词到、键也到。
+     * <p>旧谱面前奏之后（427–687）只放示范键，所以这里等价于 687；但现在的谱面是从 0.1 秒
+     * 一路排下来的，如果还卡在 687，第一段二十多个真键就白按了。改成跟着谱面走：
+     * 前奏仍然只击退不计分，前奏一结束就进判定。
      */
-    public static final int SCORE_START_TICK = 260;
+    public static final int SCORE_FROM = firstAtOrAfter(INTRO_END);
 
-    /** 计分的第一拍：No too late 之后（含）的第一个真实拍点。 */
-    public static final int SCORE_FROM = firstAtOrAfter(SCORE_START_TICK);
-    /** 最后一个真实鼓点（约 99.1 秒）。 */
-    public static final int SCORE_TO = 1999;
-
-    /** 光束阶段：28.5–57 秒、71–100 秒（和 {@code BrainrotCycle.FIRE_START} 那几个数对齐）。 */
-    private static final int BEAM_START = 574;
-    private static final int BEAM_END = 1140;
-    private static final int BEAM2_START = 1420;
-    private static final int BEAM2_END = 2000;
-
-    /** 最后一段黑暗从这一该开始（100 秒）：从这里起不再放键，判定条慢慢淡出。 */
-    public static final int FINAL_DARK = 100 * 20;
-
-    /** 示范长音：11 秒末尾起，一直拖到 No too late 的第一个实体拍（只是示范，不算分）。 */
-    public static final int LEAD_HOLD_START = 11 * 20;
-
-    /**
-     * 长音：1:08 起到第二句口白出口前一瞬（1360–1398 刻）。
-     *
-     * <p>尾巴收到 1398 而不是整 70 秒：第二句「Nope」在 1398 刻出口，长音要是压到 1400，
-     * 那一下会被当成「按住」续拍，白键就吞掉了。
-     */
-    public static final int HOLD_START = 68 * 20;
-    public static final int HOLD_END = 1398;
-    /** 收尾那根长音：最后两个短键（1990 / 1999）并成一根，从 1990 拖到曲末的黑暗。 */
-    public static final int FINAL_HOLD_START = 1990;
-    public static final int FINAL_HOLD_END = 2000;
-    /** 一共几根长音。 */
-    public static final int HOLD_COUNT = 2;
+    /** 长音表本身在上面的 {@link #HOLDS}（要排在拍表之前，生成谱面时要用）。 */
 
     private BrainrotBeats() {
     }
@@ -308,12 +571,12 @@ public final class BrainrotBeats {
 
     /** 第 {@code index} 根长音的起刻。 */
     public static int holdStart(int index) {
-        return index == 0 ? HOLD_START : FINAL_HOLD_START;
+        return HOLDS[index][0];
     }
 
     /** 第 {@code index} 根长音的止刻（不含）。 */
     public static int holdEnd(int index) {
-        return index == 0 ? HOLD_END : FINAL_HOLD_END;
+        return HOLDS[index][1];
     }
 
     /** 第 {@code index} 根长音的头拍在拍表里的下标。 */
@@ -335,6 +598,57 @@ public final class BrainrotBeats {
             }
         }
         return -1;
+    }
+
+    /** 示范键总数。 */
+    public static int demoNoteCount() {
+        return DEMO.length;
+    }
+
+    /** 第 {@code index} 个示范键的刻（越界夹到两端）。 */
+    public static int demoNoteTick(int index) {
+        if (index < 0) {
+            return DEMO[0];
+        }
+        if (index >= DEMO.length) {
+            return DEMO[DEMO.length - 1];
+        }
+        return DEMO[index];
+    }
+
+    /** 第 {@code index} 根示范长音的起刻。 */
+    public static int demoHoldStart(int index) {
+        return DEMO_HOLDS[index][0];
+    }
+
+    /** 第 {@code index} 根示范长音的止刻（不含）。 */
+    public static int demoHoldEnd(int index) {
+        return DEMO_HOLDS[index][1];
+    }
+
+    /** 示范长音总数。 */
+    public static int demoHoldCount() {
+        return DEMO_HOLDS.length;
+    }
+
+    /** {@code tick} 附近（±{@code tolerance} 刻）有没有谱面实键。 */
+    public static boolean hasNoteNear(int tick, int tolerance) {
+        if (TICKS.length == 0) {
+            return false;
+        }
+        int[] out = new int[1];
+        nearest(tick, out);
+        return Math.abs(out[0]) <= tolerance;
+    }
+
+    /** {@code tick} 附近（±{@code tolerance} 刻）有没有示范键。 */
+    public static boolean hasDemoNear(int tick, int tolerance) {
+        for (int d : DEMO) {
+            if (Math.abs(d - tick) <= tolerance) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 拍点总数。 */
@@ -401,6 +715,108 @@ public final class BrainrotBeats {
         return age >= SCORE_FROM && age <= SCORE_TO;
     }
 
+    // ------------------------------------------------------------------
+    // 伴奏层（牛仔帽）：全自动播放，只负责积累闪避
+    // ------------------------------------------------------------------
+
+    /** 伴奏层全自动：每自动按下多少颗换 1 次闪避（一次只存 1 次，HUD 用同一个数算进度）。 */
+    public static final int BONUS_PER_DODGE = 10;
+
+    /**
+     * 伴奏层（牛仔帽）的时刻表：取自伴奏 / 卡点谱。
+     *
+     * <p>**不进主旋律**（不在 {@link #TICKS} 里），也**不需要玩家按**：
+     * 谱子每走到一颗就自动「按」一下（HUD 白闪反馈），每 {@link #BONUS_PER_DODGE}
+     * 颗换 1 次闪避。**一次只存 1 次**：攒满后暂停，等玩家把闪避用掉，再从头攒 10 颗。
+     * 漏不漏、准不准都不判 —— 这一层只是观赏 + 攒闪避。
+     */
+    private static final int[] BONUS = {
+            440, 454, 467, 475, 489, 498, 506, 525, 533, 542, 560, 569,
+            578, 595, 603, 612, 629, 639, 648, 665, 674, 725, 738, 746,
+            755, 774, 782, 791, 809, 818, 826, 845, 854, 862, 880, 889,
+            897, 916, 925, 932, 952, 961, 970, 986, 995, 1004, 1011, 1019,
+            1023, 1027, 1032, 1034, 1037, 1040, 1048, 1054, 1059, 1063, 1065, 1068,
+            1071, 1077, 1083, 1091, 1095, 1099, 1103, 1106, 1108, 1112, 1117, 1122,
+            1129, 1133, 1135, 1138, 1141, 1144, 1149, 1154, 1161, 1166, 1169, 1174,
+            1177, 1179, 1182, 1186, 1190, 1198, 1202, 1205, 1207, 1211, 1213, 1217,
+            1220, 1225, 1232, 1236, 1239, 1244, 1247, 1250, 1252, 1256, 1261, 1266,
+            1272, 1275, 1279, 1281, 1285, 1288, 1290, 1297, 1306, 1310, 1313, 1316,
+            1319, 1322, 1327, 1332, 1342, 1345, 1348, 1351, 1354, 1357, 1362, 1368,
+            1373, 1378, 1381, 1387, 1391, 1394, 1397, 1402, 1406, 1415, 1417, 1420,
+            1424, 1427, 1432, 1439, 1444, 1450, 1453, 1456, 1459, 1462, 1466, 1469,
+            1475, 1481, 1486, 1490, 1493, 1496, 1499, 1504, 1510, 1514, 1520, 1524,
+            1527, 1530, 1533, 1536, 1540, 1545, 1550, 1556, 1559, 1562, 1565, 1569,
+            1572, 1577, 1586, 1596, 1607, 1616, 1626, 1635, 1644, 1655, 1665, 1675,
+            1686, 1697, 1708, 1720, 1732, 1745, 1758, 1771, 1783, 1796, 1809, 1821,
+            1833, 1845, 1861, 1868, 1874, 1877, 1881, 1884, 1887, 1890, 1895, 1901,
+            1908, 1911, 1914, 1916, 1919, 1922, 1926, 1932, 1941, 1944, 1948, 1953,
+            1956, 1959, 1963, 1966, 1972, 1979, 1982, 1985, 1987, 1990, 1994, 1998,
+            2004, 2012, 2015, 2019, 2024, 2027, 2030, 2033, 2037, 2042, 2051, 2054,
+            2057, 2060, 2063, 2069, 2074, 2082, 2085, 2088, 2094, 2098, 2101, 2103,
+            2109, 2117, 2121, 2124, 2127, 2129, 2132, 2135, 2140, 2148, 2152, 2155,
+            2158, 2162, 2164, 2167, 2170, 2173, 2177, 2185, 2187, 2193, 2196, 2198,
+            2201, 2204, 2207, 2211, 2217, 2220, 2225, 2228, 2236, 2239, 2241, 2244,
+            2248, 2252, 2258, 2263, 2266, 2269, 2272, 2275, 2278, 2282, 2288, 2297,
+            2301, 2306, 2309, 2312, 2315, 2318, 2323, 2329, 2336, 2339, 2342, 2345,
+            2348, 2351, 2356, 2360, 2365, 2369, 2374, 2379, 2382, 2384, 2390, 2394,
+            2399, 2406, 2409, 2412, 2415, 2419,
+    };
+
+
+
+    /** 白键总数。 */
+    public static int bonusCount() {
+        return BONUS.length;
+    }
+
+    /** 第 {@code index} 颗白键的刻。 */
+    public static int bonusTick(int index) {
+        if (index < 0) {
+            return BONUS.length == 0 ? 0 : BONUS[0];
+        }
+        if (index >= BONUS.length) {
+            return BONUS.length == 0 ? 0 : BONUS[BONUS.length - 1];
+        }
+        return BONUS[index];
+    }
+
+    /** 离 {@code age} 最近、且在 {@code window} 刻内的白键下标（没有就 -1）。 */
+    public static int bonusIndexAt(int age, int window) {
+        if (BONUS.length == 0) {
+            return -1;
+        }
+        int lo = 0;
+        int hi = BONUS.length - 1;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (BONUS[mid] < age) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        int best = lo;
+        if (lo > 0 && Math.abs(BONUS[lo - 1] - age) <= Math.abs(BONUS[lo] - age)) {
+            best = lo - 1;
+        }
+        return Math.abs(BONUS[best] - age) <= window ? best : -1;
+    }
+
+    /** 到 {@code age} 为止，已经自动按下了多少颗伴奏键（含正好落在这一刻的）。 */
+    public static int bonusPassed(int age) {
+        int lo = 0;
+        int hi = BONUS.length;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (BONUS[mid] <= age) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        return lo;
+    }
+
     /**
      * 「Nope / too / late」那一排字在屏幕上的窗口：在的话返回这一句的锚点刻（第一个词），
      * 不在返回 -1。HUD 藏条 / 藏歌词、客户端压药水粒子，全都用这一个判断。
@@ -410,6 +826,6 @@ public final class BrainrotBeats {
         int second = NO_TOO_LATE_SECOND;
         int anchor = Math.abs(age - second) <= Math.abs(age - first) ? second : first;
         int last = anchor + SPEECH_STEP * (SPEECH_WORDS.length - 1);
-        return age < anchor - 8 || age > last + 26 ? -1 : anchor;
+        return age < anchor - 8 || age > last + SPEECH_TAIL ? -1 : anchor;
     }
 }

@@ -25,6 +25,18 @@ public final class HatSounds {
     public static final RegistryObject<SoundEvent> RED_MUSIC = register("music_red");
     /** 「脑蚀」帽子专用曲：MONTAGEM ALQUIMIA。 */
     public static final RegistryObject<SoundEvent> BRAINROT_MUSIC = register("music_brainrot");
+    /** Teto 的动作 1 舞曲：就是那 158 帧的来源视频（15.77 秒），客户端跟着动作循环放。 */
+    public static final RegistryObject<SoundEvent> TETO_DANCE = register("teto_lets_get_it");
+    /** Teto 的动作 2 舞曲：那段 189 帧（18.93 秒）视频自己的音轨。 */
+    public static final RegistryObject<SoundEvent> TETO_DANCE3 = register("teto_dance3");
+    /**
+     * Teto 动作 3（连跳版）的**整条**舞曲：两段视频的音轨按音频对齐结果拼成的一条
+     * （32.5 秒，正好 325 帧 × 0.1 秒）。实测两段音频首尾重合约 2.2 秒
+     * （视频 2 的第 0 秒 = 视频 1 的第 13.57 秒），所以直接在重合段里切一刀、
+     * 交叉淡化 60 ms，听起来是连续的一条曲子 —— 中途不用再换声道。
+     */
+    public static final RegistryObject<SoundEvent> TETO_DANCE_JOINED =
+            register("teto_dance_joined");
 
     private HatSounds() {
     }

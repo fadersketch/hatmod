@@ -1,6 +1,7 @@
 package com.hatmod.client;
 
 import com.hatmod.HatMusic;
+import com.hatmod.HatNetwork;
 import net.minecraft.client.resources.sounds.EntityBoundSoundInstance;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundSource;
@@ -22,14 +23,24 @@ public class HatMusicInstance extends EntityBoundSoundInstance {
     private final float baseVolume;
     private boolean muted;
     private int lastHeartbeat;
+    /** 这条 BGM 属于谁：谱面的钟要等这条真的开始响再走（见 BrainrotQteClient）。 */
+    private final int wearerId;
+    /** 「真的响起来了」只回执一次：音效引擎第一次 tick 到我就是它排上了。 */
+    private boolean acknowledged;
 
     public HatMusicInstance(SoundEvent sound, Entity wearer) {
         super(sound, SoundSource.PLAYERS, HatMusic.MUSIC_VOLUME, 1.0F, wearer, wearer.getId());
         this.baseVolume = HatMusic.MUSIC_VOLUME;
+        this.wearerId = wearer.getId();
     }
 
     void setMuted(boolean value) {
         this.muted = value;
+    }
+
+    /** 这条 BGM 此刻是不是被压成了无声（别的那条占了位置）。 */
+    boolean isMuted() {
+        return this.muted;
     }
 
     int lastHeartbeat() {
@@ -61,5 +72,13 @@ public class HatMusicInstance extends EntityBoundSoundInstance {
         super.tick();
         // 心跳：引擎每刻都会 tick 我，一旦停了就说明这条已经播完 / 实体没了
         this.lastHeartbeat = HatMusicPlayer.ticks();
+        // 引擎真的把我排上了（声音已经响起来）：告诉服务端「这一首从现在开始算」——
+        // 白帽的蓄力等这一下才倒数，光柱才能咬住这一轮音乐的拍子（第二轮也一样）
+        if (!this.acknowledged) {
+            this.acknowledged = true;
+            HatNetwork.sendMusicStarted(this.wearerId);
+        }
+        // 引擎真的把我排上了（声音已经响起来）：自己的谱面钟到这一刻才开始走
+        BrainrotQteClient.onSoundRunning(this.wearerId);
     }
 }

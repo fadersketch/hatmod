@@ -79,6 +79,24 @@ public final class HatSettings {
     public static final float DEFAULT_BRAINROT_DAMAGE_SCALE = 1.5F;
 
     /**
+     * 「脑蚀」光柱**百分比伤害**的倍率（乘在「每刻 当前生命 × 0.5%」那一层上）。
+     *
+     * <p>出厂值 <b>0.5</b>：就是原来的一半 —— 0.5%/刻 → 0.25%/刻，
+     * 连击 / 涌动叠上去的那几层也一起按这个比例缩。
+     * 调参器「脑蚀」页第二个输入框就是它。
+     */
+    public static final float DEFAULT_BRAINROT_PERCENT_SCALE = 0.5F;
+
+    /**
+     * 散养的 Teto **每一次闲聊时消失**的概率（出厂 0.1%）。
+     *
+     * <p>她本来就要在后室里继续找出口，偶尔也会「我有点事，先走了」—— 说完就散场，
+     * 不是被打死，也不掉东西，想要再放一只就行。调参器「脑蚀」页最后一个输入框；
+     * 调试时拉到 {@code 1}（100%）可以每 30 秒复现一次，不用等运气。
+     */
+    public static final float DEFAULT_TETO_VANISH_CHANCE = 0.01F;
+
+    /**
      * 「自己的 BGM 优先」的出厂默认值：开启。
      *
      * <p>开启后每个听者只听得见一条帽子 BGM：自己的那条绝对优先；
@@ -154,8 +172,17 @@ public final class HatSettings {
     /** 「脑蚀」每帧伤害倍率当前值（服务端权威）。 */
     private static float brainrotDamageScale = DEFAULT_BRAINROT_DAMAGE_SCALE;
 
+    /** 「脑蚀」百分比伤害倍率当前值（服务端权威）。 */
+    private static float brainrotPercentScale = DEFAULT_BRAINROT_PERCENT_SCALE;
+
+    /** 散养 Teto 每次闲聊消失的概率当前值（服务端权威，0..1）。 */
+    private static float tetoVanishChance = DEFAULT_TETO_VANISH_CHANCE;
+
     /** 「强制路线」当前值；{@link #ROUTE_RANDOM} 表示正常随机。 */
     private static String forcedRoute = ROUTE_RANDOM;
+
+    /** 开局要不要扫各模组 jar 里的 Unsafe 痕迹（{@link ModTamperScan}）。 */
+    private static boolean tamperScan = true;
 
     private HatSettings() {
     }
@@ -200,12 +227,21 @@ public final class HatSettings {
         /** 「脑蚀」每帧伤害倍率（出厂 1.5）。老配置里没有这个字段时自动落成出厂值。 */
         public float brainrotDamageScale = DEFAULT_BRAINROT_DAMAGE_SCALE;
 
+        /** 「脑蚀」百分比伤害倍率（出厂 0.5）。老配置里没有这个字段时自动落成出厂值。 */
+        public float brainrotPercentScale = DEFAULT_BRAINROT_PERCENT_SCALE;
+
+        /** 散养 Teto 每次闲聊消失的概率（出厂 0.001 = 0.1%）。 */
+        public float tetoVanishChance = DEFAULT_TETO_VANISH_CHANCE;
+
         /**
          * 「强制路线」：{@link #ROUTE_RANDOM}（默认，正常随机）或 {@code black} / {@code white} / {@code red}。
          *
          * <p>调试用：设成某条颜色后，「全」每轮都走那一条，方便逐条核对时长 / BGM / 颜色。
          */
         public String forcedRoute = ROUTE_RANDOM;
+
+        /** 开局扫描（{@link ModTamperScan}）开关，出厂开。 */
+        public boolean tamperScan = true;
 
         /**
          * 调试开关「自动打拍」的玩家名单（UUID 字符串）。
@@ -214,6 +250,49 @@ public final class HatSettings {
          * 老配置里没有它时会落成空表，<b>不需要动 {@link #CONFIG_VERSION}</b>。
          */
         public java.util.List<String> autoTapPlayers = new java.util.ArrayList<>();
+
+        /**
+         * 已经**完整打过至少一轮**脑蚀的玩家（UUID 字符串）。
+         *
+         * <p>台词里有些话（「你的手比上一次听话了」）默认玩家玩过 —— 第一次玩的人听到
+         * 「上一次」会很出戏。这份名单就是判断「他到底有没有上一次」用的。
+         */
+        public java.util.List<String> playedBrainrot = new java.util.ArrayList<>();
+
+        /** 见过散养 Teto 的玩家（UUID 字符串）。「又见面了？」只对他们说。 */
+        public java.util.List<String> metTeto = new java.util.ArrayList<>();
+
+        /**
+         * 每个玩家**成功召唤** Teto 的次数（UUID 字符串 -> 次数）。
+         *
+         * <p>帽子链路和刷怪蛋都算，但只算「真的放进去了」的那些：链路那边 {@code spawnTetos}
+         * 一只都没放成就不是召唤，刷怪蛋那边要等她认了主才算数。台词按这个分层
+         * （见 {@code TetoSpeech}）。
+         */
+        public java.util.Map<String, Integer> tetoSummons = new java.util.LinkedHashMap<>();
+
+        /** 每个玩家喂过她几次（UUID 字符串 -> 次数）。喂食台词按这次数分阶段。 */
+        public java.util.Map<String, Integer> tetoFeeds = new java.util.LinkedHashMap<>();
+
+        /** 每个玩家最后一次喂的是什么（UUID 字符串 -> 物品的显示名）。 */
+        public java.util.Map<String, String> tetoLastFood = new java.util.LinkedHashMap<>();
+
+        /** 每个玩家最后一次喂的**难吃**东西（腐肉那类，UUID 字符串 -> 显示名）。 */
+        public java.util.Map<String, String> tetoLastBadFood = new java.util.LinkedHashMap<>();
+
+        /** 每个玩家和她一起经历过的事（UUID 字符串 -> 记忆标记列表），见 {@code TetoSpeech}。 */
+        public java.util.Map<String, java.util.List<String>> tetoMemories = new java.util.LinkedHashMap<>();
+
+        /** 每个玩家已经说过的记忆台词（UUID 字符串 -> 语言键列表）：同一句一辈子只说一次。 */
+        public java.util.Map<String, java.util.List<String>> tetoSpoken = new java.util.LinkedHashMap<>();
+
+        /** 每个玩家上一次**成功计数**的召唤发生在什么时候（UUID 字符串 -> 游戏刻）。 */
+        public java.util.Map<String, Long> tetoLastSummon = new java.util.LinkedHashMap<>();
+
+        /** 每个玩家的 Teto 心情值（0..100，出厂 50），见 {@code TetoMood}。 */
+        public java.util.Map<String, Integer> tetoMood = new java.util.LinkedHashMap<>();
+        /** 心情值上次结算的时刻（UUID 字符串 -> 游戏刻）。 */
+        public java.util.Map<String, Long> tetoMoodAt = new java.util.LinkedHashMap<>();
     }
 
     /** 一顶帽子的一组参数。字段 public、有默认构造，是给 Gson 直接读写用的。 */
@@ -364,6 +443,32 @@ public final class HatSettings {
         save();
     }
 
+    /** 「脑蚀」百分比伤害倍率（乘在每刻「当前生命百分比」那一层上）。 */
+    public static synchronized float brainrotPercentScale() {
+        ensureLoaded();
+        return brainrotPercentScale;
+    }
+
+    /** 改「脑蚀」百分比伤害倍率（调参器「脑蚀」页第二个框）。0 = 完全没有百分比伤害。 */
+    public static synchronized void setBrainrotPercentScale(float value) {
+        ensureLoaded();
+        brainrotPercentScale = clamp(value, 0.0F, 3.0F);
+        save();
+    }
+
+    /** 散养 Teto 每次闲聊消失的概率（0..1）。 */
+    public static synchronized float tetoVanishChance() {
+        ensureLoaded();
+        return tetoVanishChance;
+    }
+
+    /** 改散养 Teto 每次闲聊消失的概率（调参器「脑蚀」页）。1 = 必走，用来复现。 */
+    public static synchronized void setTetoVanishChance(float value) {
+        ensureLoaded();
+        tetoVanishChance = clamp(value, 0.0F, 1.0F);
+        save();
+    }
+
     /** 改「全」三条路线的帧伤（调参器「全帽」页 / 命令调用）。 */
     public static synchronized void setRouteDamage(float black, float white, float red) {
         ensureLoaded();
@@ -417,6 +522,237 @@ public final class HatSettings {
         save();
     }
 
+    /** 打完过至少一轮脑蚀的玩家（落盘，重启后还在）。 */
+    private static final java.util.Set<java.util.UUID> BRAINROT_PLAYED = new java.util.HashSet<>();
+
+    /** 见过散养 Teto 的玩家（落盘，重启后还在）。 */
+    private static final java.util.Set<java.util.UUID> MET_TETO = new java.util.HashSet<>();
+
+    /** 这个玩家以前见过散养的她吗（决定「又见面了？」能不能说）。 */
+    public static synchronized boolean tetoMet(java.util.UUID player) {
+        ensureLoaded();
+        return MET_TETO.contains(player);
+    }
+
+    /** 记下「见过她了」，并立刻落盘。 */
+    public static synchronized void markTetoMet(java.util.UUID player) {
+        ensureLoaded();
+        if (MET_TETO.add(player)) {
+            save();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Teto 的「熟悉度」与「记忆」
+    //
+    // 她要记得这是第几次被叫出来、也记得一起经历过什么（见 TetoSpeech）。
+    // 和 metTeto 一样按玩家记、落盘，重进游戏还在。
+    // ------------------------------------------------------------------
+
+    /** 玩家 -> 成功召唤 Teto 的次数。 */
+    private static final Map<java.util.UUID, Integer> TETO_SUMMONS = new java.util.HashMap<>();
+    private static final Map<java.util.UUID, Integer> TETO_FEEDS = new java.util.HashMap<>();
+    private static final Map<java.util.UUID, String> TETO_LAST_FOOD = new java.util.HashMap<>();
+    private static final Map<java.util.UUID, String> TETO_LAST_BAD_FOOD = new java.util.HashMap<>();
+
+    /** 玩家 -> 和她一起经历过的事（{@code chain_end} / {@code fed} 之类）。 */
+    private static final Map<java.util.UUID, java.util.Set<String>> TETO_MEMORIES = new java.util.HashMap<>();
+
+    /** 玩家 -> 已经说过的记忆台词（每句一辈子一次）。 */
+    private static final Map<java.util.UUID, java.util.Set<String>> TETO_SPOKEN = new java.util.HashMap<>();
+
+    /** 玩家 -> 上一次计数的召唤发生在哪个游戏刻（防刷次数用）。 */
+    private static final Map<java.util.UUID, Long> TETO_LAST_SUMMON = new java.util.HashMap<>();
+
+    /**
+     * 两次**计数**之间至少要隔多久（刻）：一个完整的游戏日（24000 刻）。
+     *
+     * <p>只从第 2 次开始卡：第 1 次 → 第 2 次不限，之后每往上涨一级都要再等一天。
+     * 期间玩家照样能把她叫出来，只是**次数不涨**、台词也不会进下一层。
+     */
+    public static final long TETO_SUMMON_INTERVAL = 24000L;
+
+    /** 玩家 -> 脑蚀被磨穿的那一刻（游戏刻）。只用来分辨「自己摘」还是「被敌人弄掉」，不存盘。 */
+    private static final Map<java.util.UUID, Long> HAT_BROKEN_AT = new java.util.HashMap<>();
+
+    /** 记下「脑蚀刚被磨穿」（由 {@code HatItems} 的 damageItem 调用）。 */
+    public static synchronized void markHatBroken(java.util.UUID player, long now) {
+        HAT_BROKEN_AT.entrySet().removeIf(entry -> now - entry.getValue() > 200L);
+        HAT_BROKEN_AT.put(player, now);
+    }
+
+    /** 最近（100 刻内）这个玩家的脑蚀是不是被磨穿的 —— 用来区分「自己摘」和「被敌人弄掉」。 */
+    public static synchronized boolean hatBrokeRecently(java.util.UUID player, long now) {
+        Long at = HAT_BROKEN_AT.get(player);
+        return at != null && now - at >= 0L && now - at <= 100L;
+    }
+
+    /** 玩家 -> 她最后一次被**主人本人**打到是什么时候（游戏刻）。只放内存：重进就当她忘了。 */
+    private static final Map<java.util.UUID, Long> TETO_HIT_AT = new java.util.HashMap<>();
+
+    /** 打完她之后，这句话的有效期（刻）：一个游戏日。 */
+    public static final long TETO_HIT_MEMORY_TICKS = 24000L;
+
+    /** 记一笔「主人刚才打了她」。 */
+    public static synchronized void markTetoHit(java.util.UUID player, long now) {
+        TETO_HIT_AT.entrySet().removeIf(entry -> now - entry.getValue() > TETO_HIT_MEMORY_TICKS);
+        TETO_HIT_AT.put(player, now);
+    }
+
+    /**
+     * 她最近（一个游戏日内）被主人本人打过吗 —— 「你这次不会又打我吧」用它判定。
+     *
+     * <p>不做成永久记忆：被怪打过、被别的玩家打过都不该算到她头上；
+     * 真打过一次也确实该记一阵子，但一个游戏日之后她就不提了。
+     */
+    public static synchronized boolean tetoHitFresh(java.util.UUID player, long now) {
+        Long at = TETO_HIT_AT.get(player);
+        return at != null && now - at >= 0L && now - at <= TETO_HIT_MEMORY_TICKS;
+    }
+
+    /** 这个玩家成功召唤过她几次（0 = 还没见过）。 */
+    public static synchronized int tetoSummons(java.util.UUID player) {
+        ensureLoaded();
+        Integer count = TETO_SUMMONS.get(player);
+        return count == null ? 0 : count;
+    }
+
+    /**
+     * 记一次成功召唤，返回**记完之后**的次数（台词要按「第几次」分层）。
+     *
+     * <p>防刷：从第 2 次起，距上一次计数不满 {@link #TETO_SUMMON_INTERVAL}（一个游戏日）
+     * 就**不计数**，原样返回当前次数 —— 召唤本身照常发生，只是不推进台词进度。
+     *
+     * @param now 当前游戏刻（{@code level.getGameTime()}）
+     */
+    public static synchronized int addTetoSummon(java.util.UUID player, long now) {
+        ensureLoaded();
+        int current = tetoSummons(player);
+        if (current >= 2) {
+            Long last = TETO_LAST_SUMMON.get(player);
+            if (last != null && now - last < TETO_SUMMON_INTERVAL) {
+                return current;
+            }
+        }
+        int next = current + 1;
+        TETO_SUMMONS.put(player, next);
+        TETO_LAST_SUMMON.put(player, now);
+        save();
+        return next;
+    }
+
+    /** 这个玩家喂过她几次（0 = 还没喂过）。 */
+    public static synchronized int tetoFeeds(java.util.UUID player) {
+        ensureLoaded();
+        Integer count = TETO_FEEDS.get(player);
+        return count == null ? 0 : count;
+    }
+
+    /**
+     * 记一次投喂，返回**记完之后**的次数。
+     *
+     * <p>不管喂的是什么、隔了多久，喂一口就算一次 —— 喂食台词按「第一次 / 第二次 / 第三次往后」
+     * 分三套说法，不然连着喂十次都是同一句，她会像个复读机。
+     */
+    public static synchronized int addTetoFeed(java.util.UUID player) {
+        ensureLoaded();
+        int next = tetoFeeds(player) + 1;
+        TETO_FEEDS.put(player, next);
+        save();
+        return next;
+    }
+
+    /** 记住最后一次喂的是什么（只用于她自己提起来，不参与任何判定）。 */
+    public static synchronized void rememberTetoFood(java.util.UUID player, String name) {
+        ensureLoaded();
+        if (name == null || name.isEmpty()) {
+            return;
+        }
+        if (!name.equals(TETO_LAST_FOOD.get(player))) {
+            TETO_LAST_FOOD.put(player, name);
+            save();
+        }
+    }
+
+    /** 上一次喂的是什么（没喂过就是空串）。 */
+    public static synchronized String tetoLastFood(java.util.UUID player) {
+        ensureLoaded();
+        String name = TETO_LAST_FOOD.get(player);
+        return name == null ? "" : name;
+    }
+
+    /** 记住最后一次喂的那种**难吃**的东西（腐肉、蜘蛛眼……），只用来让她之后抱怨一句。 */
+    public static synchronized void rememberTetoBadFood(java.util.UUID player, String name) {
+        ensureLoaded();
+        if (name == null || name.isEmpty()) {
+            return;
+        }
+        if (!name.equals(TETO_LAST_BAD_FOOD.get(player))) {
+            TETO_LAST_BAD_FOOD.put(player, name);
+            save();
+        }
+    }
+
+    /** 上一次喂的那种难吃的东西（没有就是空串）。 */
+    public static synchronized String tetoLastBadFood(java.util.UUID player) {
+        ensureLoaded();
+        String name = TETO_LAST_BAD_FOOD.get(player);
+        return name == null ? "" : name;
+    }
+
+    /** 他有没有这段记忆。 */
+    public static synchronized boolean tetoMemory(java.util.UUID player, String memory) {
+        ensureLoaded();
+        java.util.Set<String> set = TETO_MEMORIES.get(player);
+        return set != null && set.contains(memory);
+    }
+
+    /** 这段记忆的副本（挑台词时遍历用，外面改不动）。 */
+    public static synchronized java.util.Set<String> tetoMemories(java.util.UUID player) {
+        ensureLoaded();
+        java.util.Set<String> set = TETO_MEMORIES.get(player);
+        return set == null ? java.util.Collections.emptySet() : new java.util.HashSet<>(set);
+    }
+
+    /** 记下一段记忆（已经有了就不再写盘）。 */
+    public static synchronized void rememberTeto(java.util.UUID player, String memory) {
+        ensureLoaded();
+        java.util.Set<String> set = TETO_MEMORIES.computeIfAbsent(player, id -> new java.util.HashSet<>());
+        if (set.add(memory)) {
+            save();
+        }
+    }
+
+    /** 这句记忆台词说过了吗（说过就不再重复）。 */
+    public static synchronized boolean tetoSpoken(java.util.UUID player, String key) {
+        ensureLoaded();
+        java.util.Set<String> set = TETO_SPOKEN.get(player);
+        return set != null && set.contains(key);
+    }
+
+    /** 记下「这句说过了」。 */
+    public static synchronized void markTetoSpoken(java.util.UUID player, String key) {
+        ensureLoaded();
+        java.util.Set<String> set = TETO_SPOKEN.computeIfAbsent(player, id -> new java.util.HashSet<>());
+        if (set.add(key)) {
+            save();
+        }
+    }
+
+    /** 这个玩家以前打过脑蚀吗（决定能不能提「上一次」）。 */
+    public static synchronized boolean brainrotPlayed(java.util.UUID player) {
+        ensureLoaded();
+        return BRAINROT_PLAYED.contains(player);
+    }
+
+    /** 记下「他打完过一轮」，并立刻落盘。 */
+    public static synchronized void markBrainrotPlayed(java.util.UUID player) {
+        ensureLoaded();
+        if (BRAINROT_PLAYED.add(player)) {
+            save();
+        }
+    }
+
     /** 恢复这顶帽子的出厂数值（{@link HatType} 里那一份）。 */
     public static synchronized void resetToDefaults(HatType type) {
         get(type).reset(type);
@@ -440,6 +776,7 @@ public final class HatSettings {
     public static synchronized void setForceBreak(boolean value) {
         ensureLoaded();
         forceBreak = value;
+        com.hatmod.guard.HatGuard.syncSwitch();
         save();
     }
 
@@ -447,7 +784,7 @@ public final class HatSettings {
      * 「实体表接管」开着没有（默认关）。
      *
      * <p>开了之后，破防模式下被外部从实体管理器里挖走的虚影 / 铁托，会被按
-     * {@code PersistentEntitySectionManager} 的内部接口直接塞回去 —— 这是 pig2 那招，
+     * {@code PersistentEntitySectionManager} 的内部接口直接塞回去 —— 这是常见的一招，
      * 也是唯一能扛住「改实体表」类删除的办法。代价是动了原版内部结构，所以默认关。
      */
     public static synchronized boolean brainrotLockAll() {
@@ -488,6 +825,20 @@ public final class HatSettings {
         entityLock = value;
         save();
     }
+
+    /** 开局扫描开关（默认开）。 */
+    public static synchronized boolean tamperScan() {
+        ensureLoaded();
+        return tamperScan;
+    }
+
+    /** 改开局扫描开关。 */
+    public static synchronized void setTamperScan(boolean value) {
+        ensureLoaded();
+        tamperScan = value;
+        save();
+    }
+
 
     // ------------------------------------------------------------------
     // 调试开关（落盘，重启后还在）
@@ -541,7 +892,16 @@ public final class HatSettings {
         routeDamageRed = DEFAULT_ROUTE_DAMAGE_RED;
         forcedRoute = ROUTE_RANDOM;
         brainrotDamageScale = DEFAULT_BRAINROT_DAMAGE_SCALE;
+        brainrotPercentScale = DEFAULT_BRAINROT_PERCENT_SCALE;
+        tetoVanishChance = DEFAULT_TETO_VANISH_CHANCE;
+        tamperScan = true;
         DEBUG_AUTO_TAP.clear();
+        BRAINROT_PLAYED.clear();
+        MET_TETO.clear();
+        TETO_SUMMONS.clear();
+        TETO_MEMORIES.clear();
+        TETO_SPOKEN.clear();
+        TETO_LAST_SUMMON.clear();
         for (HatType type : HatType.values()) {
             ENTRIES.put(type, new Entry(type));
         }
@@ -596,6 +956,124 @@ public final class HatSettings {
             routeDamageRed = clamp(fromDisk.routeDamageRed, MIN_DAMAGE, MAX_DAMAGE);
             forcedRoute = normalizeForcedRoute(fromDisk.forcedRoute);
             brainrotDamageScale = clamp(fromDisk.brainrotDamageScale, MIN_DAMAGE, MAX_DAMAGE);
+            brainrotPercentScale = clamp(fromDisk.brainrotPercentScale, 0.0F, 3.0F);
+            tetoVanishChance = clamp(fromDisk.tetoVanishChance, 0.0F, 1.0F);
+            MET_TETO.clear();
+            if (fromDisk.metTeto != null) {
+                for (String raw : fromDisk.metTeto) {
+                    try {
+                        MET_TETO.add(java.util.UUID.fromString(raw));
+                    } catch (IllegalArgumentException ignored) {
+                        // 手改坏了就当没这一行
+                    }
+                }
+            }
+            TETO_SUMMONS.clear();
+            if (fromDisk.tetoSummons != null) {
+                for (java.util.Map.Entry<String, Integer> entry : fromDisk.tetoSummons.entrySet()) {
+                    try {
+                        int count = entry.getValue() == null ? 0 : entry.getValue();
+                        TETO_SUMMONS.put(java.util.UUID.fromString(entry.getKey()), Math.max(0, count));
+                    } catch (IllegalArgumentException ignored) {
+                        // 手改坏了就当没这一行
+                    }
+                }
+            }
+            TETO_FEEDS.clear();
+            if (fromDisk.tetoFeeds != null) {
+                for (java.util.Map.Entry<String, Integer> entry : fromDisk.tetoFeeds.entrySet()) {
+                    try {
+                        int count = entry.getValue() == null ? 0 : entry.getValue();
+                        if (count > 0) {
+                            TETO_FEEDS.put(java.util.UUID.fromString(entry.getKey()), count);
+                        }
+                    } catch (IllegalArgumentException ignored) {
+                        // 手改坏了就当没这一行
+                    }
+                }
+            }
+            TETO_LAST_FOOD.clear();
+            if (fromDisk.tetoLastFood != null) {
+                for (java.util.Map.Entry<String, String> entry : fromDisk.tetoLastFood.entrySet()) {
+                    try {
+                        if (entry.getValue() != null && !entry.getValue().isEmpty()) {
+                            TETO_LAST_FOOD.put(java.util.UUID.fromString(entry.getKey()), entry.getValue());
+                        }
+                    } catch (IllegalArgumentException ignored) {
+                        // 同上
+                    }
+                }
+            }
+            TETO_LAST_BAD_FOOD.clear();
+            if (fromDisk.tetoLastBadFood != null) {
+                for (java.util.Map.Entry<String, String> entry : fromDisk.tetoLastBadFood.entrySet()) {
+                    try {
+                        if (entry.getValue() != null && !entry.getValue().isEmpty()) {
+                            TETO_LAST_BAD_FOOD.put(java.util.UUID.fromString(entry.getKey()),
+                                    entry.getValue());
+                        }
+                    } catch (IllegalArgumentException ignored) {
+                        // 手改坏了就当没这一行
+                    }
+                }
+            }
+            TETO_LAST_SUMMON.clear();
+            if (fromDisk.tetoLastSummon != null) {
+                for (java.util.Map.Entry<String, Long> entry : fromDisk.tetoLastSummon.entrySet()) {
+                    try {
+                        long when = entry.getValue() == null ? 0L : entry.getValue();
+                        TETO_LAST_SUMMON.put(java.util.UUID.fromString(entry.getKey()), when);
+                    } catch (IllegalArgumentException ignored) {
+                        // 手改坏了就当没这一行
+                    }
+                }
+            }
+            tamperScan = fromDisk.tamperScan;
+            TetoMood.restore(fromDisk.tetoMood, fromDisk.tetoMoodAt);
+            TETO_MEMORIES.clear();
+            if (fromDisk.tetoMemories != null) {
+                for (java.util.Map.Entry<String, java.util.List<String>> entry : fromDisk.tetoMemories.entrySet()) {
+                    try {
+                        java.util.UUID id = java.util.UUID.fromString(entry.getKey());
+                        java.util.Set<String> set = new java.util.HashSet<>();
+                        if (entry.getValue() != null) {
+                            set.addAll(entry.getValue());
+                        }
+                        if (!set.isEmpty()) {
+                            TETO_MEMORIES.put(id, set);
+                        }
+                    } catch (IllegalArgumentException ignored) {
+                        // 同上
+                    }
+                }
+            }
+            TETO_SPOKEN.clear();
+            if (fromDisk.tetoSpoken != null) {
+                for (java.util.Map.Entry<String, java.util.List<String>> entry : fromDisk.tetoSpoken.entrySet()) {
+                    try {
+                        java.util.UUID id = java.util.UUID.fromString(entry.getKey());
+                        java.util.Set<String> set = new java.util.HashSet<>();
+                        if (entry.getValue() != null) {
+                            set.addAll(entry.getValue());
+                        }
+                        if (!set.isEmpty()) {
+                            TETO_SPOKEN.put(id, set);
+                        }
+                    } catch (IllegalArgumentException ignored) {
+                        // 同上
+                    }
+                }
+            }
+            BRAINROT_PLAYED.clear();
+            if (fromDisk.playedBrainrot != null) {
+                for (String raw : fromDisk.playedBrainrot) {
+                    try {
+                        BRAINROT_PLAYED.add(java.util.UUID.fromString(raw));
+                    } catch (IllegalArgumentException ignored) {
+                        // 手改坏了就当没这一行
+                    }
+                }
+            }
             DEBUG_AUTO_TAP.clear();
             if (fromDisk.autoTapPlayers != null) {
                 for (String raw : fromDisk.autoTapPlayers) {
@@ -641,10 +1119,51 @@ public final class HatSettings {
         out.routeDamageRed = routeDamageRed;
         out.forcedRoute = forcedRoute;
         out.brainrotDamageScale = brainrotDamageScale;
+        out.brainrotPercentScale = brainrotPercentScale;
+        out.tetoVanishChance = tetoVanishChance;
         out.autoTapPlayers = new java.util.ArrayList<>();
         for (java.util.UUID id : DEBUG_AUTO_TAP) {
             out.autoTapPlayers.add(id.toString());
         }
+        out.playedBrainrot = new java.util.ArrayList<>();
+        for (java.util.UUID id : BRAINROT_PLAYED) {
+            out.playedBrainrot.add(id.toString());
+        }
+        out.metTeto = new java.util.ArrayList<>();
+        for (java.util.UUID id : MET_TETO) {
+            out.metTeto.add(id.toString());
+        }
+        out.tetoSummons = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<java.util.UUID, Integer> entry : TETO_SUMMONS.entrySet()) {
+            out.tetoSummons.put(entry.getKey().toString(), entry.getValue());
+        }
+        out.tetoFeeds = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<java.util.UUID, Integer> entry : TETO_FEEDS.entrySet()) {
+            out.tetoFeeds.put(entry.getKey().toString(), entry.getValue());
+        }
+        out.tetoLastFood = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<java.util.UUID, String> entry : TETO_LAST_FOOD.entrySet()) {
+            out.tetoLastFood.put(entry.getKey().toString(), entry.getValue());
+        }
+        out.tetoLastBadFood = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<java.util.UUID, String> entry : TETO_LAST_BAD_FOOD.entrySet()) {
+            out.tetoLastBadFood.put(entry.getKey().toString(), entry.getValue());
+        }
+        out.tetoMemories = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<java.util.UUID, java.util.Set<String>> entry : TETO_MEMORIES.entrySet()) {
+            out.tetoMemories.put(entry.getKey().toString(), new java.util.ArrayList<>(entry.getValue()));
+        }
+        out.tetoSpoken = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<java.util.UUID, java.util.Set<String>> entry : TETO_SPOKEN.entrySet()) {
+            out.tetoSpoken.put(entry.getKey().toString(), new java.util.ArrayList<>(entry.getValue()));
+        }
+        out.tetoLastSummon = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<java.util.UUID, Long> entry : TETO_LAST_SUMMON.entrySet()) {
+            out.tetoLastSummon.put(entry.getKey().toString(), entry.getValue());
+        }
+        out.tamperScan = tamperScan;
+        out.tetoMood = TetoMood.snapshot();
+        out.tetoMoodAt = TetoMood.snapshotTimes();
         out.hats = new LinkedHashMap<>();
         for (HatType type : HatType.values()) {
             Entry entry = ENTRIES.get(type);

@@ -20,19 +20,19 @@ import net.minecraft.resources.ResourceLocation;
  * 所以它不会自己蓄力开火 —— 这顶帽子只负责护甲和外观。
  * 画法照抄 {@link CurioHatRenderer}：把父模型「头」的姿态抄过来，在同一坐标空间里直接渲染。
  */
-public class ShadeHatLayer extends RenderLayer<HatSummon, PlayerModel<HatSummon>> {
+public class ShadeHatLayer<T extends net.minecraft.world.entity.Mob> extends RenderLayer<T, PlayerModel<T>> {
 
     /** 当前这一帧要用的护甲贴图（按头上那顶帽子的颜色走）。 */
     private ResourceLocation texture = HatMod.id("textures/models/armor/all_hat_layer_1.png");
 
     private CowboyHatModel model;
 
-    public ShadeHatLayer(RenderLayerParent<HatSummon, PlayerModel<HatSummon>> parent) {
+    public ShadeHatLayer(RenderLayerParent<T, PlayerModel<T>> parent) {
         super(parent);
     }
 
     @Override
-    public void render(PoseStack poseStack, MultiBufferSource buffer, int packedLight, HatSummon entity,
+    public void render(PoseStack poseStack, MultiBufferSource buffer, int packedLight, T entity,
                        float limbSwing, float limbSwingAmount, float partialTick, float ageInTicks,
                        float netHeadYaw, float headPitch) {
         if (entity.isInvisible()) {

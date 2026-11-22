@@ -11,6 +11,13 @@ import com.mojang.brigadier.suggestion.SuggestionProvider;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
@@ -66,6 +73,11 @@ public final class HatCommand {
                 .executes(HatCommand::show)
                 .then(Commands.literal("show").executes(HatCommand::show))
                 .then(Commands.literal("reload").executes(HatCommand::reload))
+                .then(Commands.literal("unfreeze")
+                        .executes(context -> unfreeze(context, 32))
+                        .then(Commands.argument("radius", IntegerArgumentType.integer(1, 128))
+                                .executes(context -> unfreeze(context,
+                                        IntegerArgumentType.getInteger(context, "radius")))))
                 .then(Commands.literal("reset")
                         .then(Commands.argument("hat", StringArgumentType.word())
                                 .suggests(HAT_SUGGESTIONS)
@@ -84,6 +96,8 @@ public final class HatCommand {
                                         .then(Commands.argument("red",
                                                         FloatArgumentType.floatArg(HatSettings.MIN_DAMAGE, HatSettings.MAX_DAMAGE))
                                                 .executes(HatCommand::setRouteDamage)))))
+                .then(Commands.literal("summons").executes(HatCommand::showSummons))
+                .then(Commands.literal("guard").executes(HatCommand::showGuard))
                 .then(tuneBranch()));
     }
 
@@ -116,6 +130,75 @@ public final class HatCommand {
                 .then(Commands.argument("hat", StringArgumentType.word())
                         .suggests(HAT_SUGGESTIONS)
                         .then(chargeArg));
+    }
+
+    /** {@code /hatmod summons}：列出当前世界里的 Teto / 虚影和它们的归属。 */
+    private static int showSummons(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        int tetos = 0;
+        int summoned = 0;
+        int sitting = 0;
+        int shades = 0;
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        for (ServerLevel level : source.getServer().getAllLevels()) {
+            for (Entity entity : level.getAllEntities()) {
+                if (entity instanceof Teto teto) {
+                    tetos++;
+                    if (teto.isSummoned()) {
+                        summoned++;
+                    }
+                    if (teto.isSitting()) {
+                        sitting++;
+                    }
+                    if (lines.size() < 12) {
+                        lines.add(String.format("  %s [%s] owner=%s %s%s",
+                                teto.getName().getString(), level.dimension().location(),
+                                ownerName(source.getServer(), teto.getOwnerUUID()),
+                                teto.isSummoned() ? "summoned" : "free",
+                                teto.isSitting() ? " sitting" : ""));
+                    }
+                } else if (entity instanceof HatSummon shade) {
+                    shades++;
+                    if (lines.size() < 12) {
+                        lines.add(String.format("  %s [%s] owner=%s life=%d",
+                                shade.getName().getString(), level.dimension().location(),
+                                ownerName(source.getServer(), shade.getOwnerUUID()),
+                                shade.lifeLeft()));
+                    }
+                }
+            }
+        }
+        for (String line : lines) {
+            String printed = line;
+            source.sendSuccess(() -> Component.literal(printed), false);
+        }
+        int tetoTotal = tetos;
+        int shadeTotal = shades;
+        int summonedTotal = summoned;
+        int sittingTotal = sitting;
+        source.sendSuccess(() -> Component.literal(String.format(
+                "[HatMod] Teto %d（召唤 %d / 留守 %d），虚影 %d，删不掉登记表 %d",
+                tetoTotal, summonedTotal, sittingTotal, shadeTotal,
+                HatAbilities.watchedCount())), true);
+        return tetos + shades;
+    }
+
+    private static String ownerName(MinecraftServer server, java.util.UUID id) {
+        if (id == null) {
+            return "无";
+        }
+        ServerPlayer player = server.getPlayerList().getPlayer(id);
+        return player != null ? player.getName().getString() : id.toString();
+    }
+
+    /** {@code /hatmod guard}：破防相关的账本（清算名册 / 类型封禁 / 登记表）。 */
+    private static int showGuard(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        for (String line : HatAbilities.guardLines(source.getServer())) {
+            String printed = line;
+            source.sendSuccess(() -> Component.literal("[HatMod] " + printed), false);
+        }
+        return 1;
     }
 
     private static int show(CommandContext<CommandSourceStack> context) {
@@ -194,6 +277,34 @@ public final class HatCommand {
         context.getSource().sendSuccess(
                 () -> Component.literal("[HatMod] 已从 config/hatmod.json 重新读取"), true);
         return 1;
+    }
+
+    /**
+     * {@code /hatmod unfreeze [半径]}：把周围「被这个模组关掉 AI、却没还回去」的生物救回来。
+     *
+     * <p>1.5.92 修掉了「定身解除时没人打开 {@code NoAI}」—— 但在修好之前被钉过的怪，
+     * 已经带着 {@code NoAI:1} 写进存档了，光靠改代码救不回来（登记表只在内存里）。
+     * 这条命令就是留给那些老存档的：只动现在既没被光柱按着、也没被钉着的普通生物，
+     * 铁托 / 虚影这类本来就该没 AI 的单位一律不碰。
+     */
+    private static int unfreeze(CommandContext<CommandSourceStack> context, int radius) {
+        CommandSourceStack source = context.getSource();
+        Vec3 center = source.getPosition();
+        int cleared = 0;
+        for (Mob mob : source.getLevel().getEntitiesOfClass(Mob.class, new AABB(center, center).inflate(radius))) {
+            if (mob instanceof Teto || mob instanceof HatSummon || mob instanceof TangJiaqi || mob instanceof TangJiaqiWhite) {
+                continue;
+            }
+            if (!mob.isNoAi() || HatAbilities.isUnderControl(mob) || BrainrotCycle.isPinned(mob)) {
+                continue;
+            }
+            mob.setNoAi(false);
+            cleared++;
+        }
+        int total = cleared;
+        source.sendSuccess(() -> Component.literal(
+                String.format("[HatMod] %d 格内解冻了 %d 只生物", radius, total)), true);
+        return cleared;
     }
 
     private static int tune(CommandContext<CommandSourceStack> context, String damageTypeOverride) {

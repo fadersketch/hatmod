@@ -31,6 +31,8 @@ public class HatMod {
         HatSounds.register(modBus);
         HatNetwork.register();
         // 趁 jar 句柄还开着，把本模组的类全部预先加载好（原因见 HatPreloader 的注释）。
+        modBus.addListener((net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent event) ->
+                event.enqueueWork(TetoSpawnGuard::blockDispenser));
         HatPreloader.preloadCommon();
         LOGGER.info("[HatMod] cowboy hats loaded");
     }

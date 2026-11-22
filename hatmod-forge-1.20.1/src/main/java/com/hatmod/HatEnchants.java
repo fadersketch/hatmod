@@ -212,6 +212,12 @@ public final class HatEnchants {
         return EnchantmentHelper.getItemEnchantmentLevel(enchantment.get(), hat);
     }
 
+    /** 拿某个专属附魔的本体（给 Khragg 的「满附魔全帽」用）；没注册就是 {@code null}。 */
+    public static Enchantment enchantmentOf(Kind kind) {
+        RegistryObject<Enchantment> enchantment = BY_KIND.get(kind);
+        return enchantment == null || !enchantment.isPresent() ? null : enchantment.get();
+    }
+
     /**
      * 「光柱」**额外**多给几道光柱（每级 +1 → I/II/III 级 = +1/+2/+3）。
      *

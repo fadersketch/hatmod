@@ -1,7 +1,10 @@
 package com.hatmod;
 
+import net.minecraft.network.chat.Style;
+import net.minecraft.network.chat.TextColor;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.damagesource.DamageSource;
@@ -55,15 +58,15 @@ import java.util.UUID;
 public final class BrainrotCycle {
 
     /** 曲子长度：1:45.67 → 2114 刻（取整到刻）。整轮循环就按这个长度走。 */
-    public static final int CYCLE_TICKS = 2114;
+    public static final int CYCLE_TICKS = BrainrotBeats.main(2114);
 
     /** 0 秒到 12 秒：黑暗。 */
-    private static final int DARKNESS_END = 12 * 20;
+    private static final int DARKNESS_END = BrainrotBeats.main(12 * 20);
     /** 13 秒：第一次「No too late」。 */
     /** 260 刻（13 秒）：三个词 260 / 269 / 278，和 READY / SET / GO 同刻。 */
-    private static final int TEXT_FIRST = 260;
+    private static final int TEXT_FIRST = BrainrotBeats.main(260);
     /** 14 秒：开始自转、迅捷 I、减速圈开始扩大。 */
-    private static final int SPIN_START = 14 * 20;
+    private static final int SPIN_START = BrainrotBeats.main(14 * 20);
     /**
      * 29.2 秒（584 刻）：减速圈到最大半径，开始照射。
      *
@@ -71,7 +74,7 @@ public final class BrainrotCycle {
      * 减速圈长满、Teto 加速/半径呼吸、谱面加密提速）一起后移。**结束时间不变**
      * （还是 {@link #PAUSE_START}），也就是这一段整体短了 0.7 秒。
      */
-    private static final int FIRE_START = 574;
+    private static final int FIRE_START = BrainrotBeats.main(574);
     /**
      * 43.2 秒（864 刻）：声波 —— 原曲里那一「声」。
      *
@@ -81,16 +84,27 @@ public final class BrainrotCycle {
      *
      * <p>实测下来整条链路比听到的声音晚约 0.3 秒（6 刻），所以从 862 提前到 856。
      */
-    private static final int SONIC_AT = 856;
+    private static final int SONIC_AT = BrainrotBeats.main(856);
+
+    /**
+     * 声波要踩中的那一拍：离 {@link #SONIC_AT} 最近的谱面键 —— 1287 刻，正好是一根长音的**头拍**。
+     *
+     * <p>声波不再自己响：得由玩家在打拍里踩中这一拍才放出来。长音只认头拍那一下，
+     * 头拍没踩上就一直没有声波（按住的过程不补触发）。
+     */
+    private static final int SONIC_NOTE = BrainrotBeats.tickAt(BrainrotBeats.nearest(SONIC_AT, new int[1]));
+
+    /** 这一轮声波放过了没（一轮最多一次）。 */
+    private static final Set<UUID> SONIC_FIRED = new HashSet<>();
     /** 57 秒：停火 + 漂浮 + 黑暗。 */
-    private static final int PAUSE_START = 57 * 20;
+    private static final int PAUSE_START = BrainrotBeats.main(57 * 20);
     /** 70 秒：第二次「No too late」。 */
     /** 1398 刻：同理，1398 / 1407 / 1416（原曲 91.26 / 91.70 / 92.16 秒）。 */
-    private static final int TEXT_SECOND = 1398;
+    private static final int TEXT_SECOND = BrainrotBeats.main(1398);
     /** 71 秒：恢复自转与照射（3 道），缓降 13 秒。 */
-    private static final int FIRE2_START = 1420;
+    private static final int FIRE2_START = BrainrotBeats.main(1420);
     /** 84 秒：缓降结束（71 + 13）。 */
-    private static final int SLOW_FALL_END = 1680;
+    private static final int SLOW_FALL_END = BrainrotBeats.main(1680);
     /**
      * 光柱道数：**始终两道**。
      *
@@ -110,7 +124,7 @@ public final class BrainrotCycle {
     /** 判定下限半宽（格）：光锥在灯口附近太细，留一点余量免得贴着目标还判空。 */
     private static final double BEAM_MIN_RADIUS = 1.0D;
     /** 100 秒：缓慢 + 黑暗，直到曲末。 */
-    private static final int SLOW_DARK_AT = 100 * 20;
+    private static final int SLOW_DARK_AT = BrainrotBeats.main(100 * 20);
 
     /** 收尾黑暗段给自己多久的完整神隐（刻）：3 秒。 */
     private static final int ENDING_VEIL_TICKS = 60;
@@ -135,7 +149,7 @@ public final class BrainrotCycle {
      * <p>音频从这一刻开始压到 -26…-29 dB，一直到那一声落下。旧代码是在
      * {@code SONIC_AT} 之后才收光束，等于安静段已经过去才停手 —— 这就是「卡点对不上」的来源。
      */
-    private static final int SONIC_PAUSE_START = 851;
+    private static final int SONIC_PAUSE_START = BrainrotBeats.main(851);
 
     /** 静默段长度 = 那一声落下之前（851 → 856，5 刻）。 */
     private static final int SONIC_BEAM_PAUSE = SONIC_AT - SONIC_PAUSE_START;
@@ -170,8 +184,10 @@ public final class BrainrotCycle {
     /** 每次「No too late」出现时，多大范围内的人会被钉住（格）。 */
     private static final double STASIS_RADIUS = 50.0D;
     /**
-     * 钉住多久（刻）＝ **和 Teto 停转 / 定视线 / 缓慢完全同一段**：
-     * {@code TEXT_FREEZE_LEAD + TEXT_TICKS + FOCUS_EXTRA_TICKS} 刻（提前 0.3 秒起，一共 2.3 秒）。
+     * 第二次「No too late」默认钉多久（刻）：25 刻（1.25 秒）。
+     *
+     * <p>第一次那一句不走这个默认值 —— 它按站定整段算（{@code STILL_RELEASE - STILL_START}），
+     * 比动作还原再早 0.2 秒撒手，也不会把定身拖进 1420 刻开始的光束段。
      *
      * <p>写成方法而不是常量：那几个常量在文件后面才声明，字段初始化顺序会让这里的值变成 0。
      */
@@ -206,6 +222,11 @@ public final class BrainrotCycle {
      */
     private static final Map<UUID, Pin> PINNED_LIVING = new HashMap<>();
 
+    /** 这只生物是不是正被「定身」钉在原地（给 {@code /hatmod unfreeze} 用）。 */
+    static boolean isPinned(LivingEntity living) {
+        return PINNED_LIVING.containsKey(living.getUUID());
+    }
+
     /** 戴帽者 -> 这一轮里**有没有见过** Teto（用来判断「全被打死了」）。 */
     private static final Map<UUID, Boolean> TETO_SEEN = new HashMap<>();
 
@@ -218,6 +239,11 @@ public final class BrainrotCycle {
     /** 戴帽者 -> 上一次发给客户端的光柱道数 / 目标列表（去重）。 */
     private static final Map<UUID, int[]> BEAM_IDS = new HashMap<>();
     private static final Map<UUID, Integer> BEAM_COUNT = new HashMap<>();
+
+    /** 刚进游戏 / 重进的玩家：这段时间内先不启动链路，等客户端世界和声音都准备好。 */
+    private static final Map<UUID, Long> JOIN_GRACE = new HashMap<>();
+    private static final int REJOIN_GRACE_TICKS = 40;
+
     /** 被尖叫打中、正在发抖的敌人 -> 还剩几刻。 */
     private static final Map<UUID, Integer> SHAKE_LEFT = new HashMap<>();
     /** 声波：剩余刻数、起点、终点。 */
@@ -237,16 +263,44 @@ public final class BrainrotCycle {
             return;
         }
         if (event.player instanceof ServerPlayer player) {
-            tick(player, player.serverLevel());
+            tickPlayerOnce(player);
         }
     }
+
+    /**
+     * 玩家每刻的去重：{@code PlayerTickEvent} / {@code LivingTickEvent} 两个入口共用。
+     *
+     * <p>键用世界刻号：LivingTickEvent 在 {@code LivingEntity.tick()} 开头发，那时
+     * {@code tickCount} 还没自增，拿它比会让同一刻跑两遍。
+     */
+    private static final Map<UUID, Long> PLAYER_TICK = new HashMap<>();
 
     @SubscribeEvent
     public static void onLivingTick(LivingEvent.LivingTickEvent event) {
         LivingEntity living = event.getEntity();
-        if (!(living instanceof ServerPlayer) && living.level() instanceof ServerLevel level) {
-            tick(living, level);
+        if (!(living.level() instanceof ServerLevel level)) {
+            return;
         }
+        // 玩家走 PlayerTickEvent.END，这条入口只管其它生物
+        if (living instanceof ServerPlayer) {
+            return;
+        }
+        tick(living, level);
+    }
+
+    private static void tickPlayerOnce(ServerPlayer player) {
+        long age = player.level().getGameTime();
+        Long last = PLAYER_TICK.get(player.getUUID());
+        if (last != null && last == age) {
+            return;
+        }
+        PLAYER_TICK.put(player.getUUID(), age);
+        if (PLAYER_TICK.size() > 64) {
+            PLAYER_TICK.clear();
+        }
+        tick(player, player.serverLevel());
+        // 「不请自来」：召唤够多次数的玩家，身边没有 Teto 时她可能自己找上来
+        TetoVisit.tick(player);
     }
 
     /**
@@ -257,8 +311,21 @@ public final class BrainrotCycle {
      */
     @SubscribeEvent
     public static void onLogin(PlayerEvent.PlayerLoggedInEvent event) {
-        if (event.getEntity() instanceof ServerPlayer player
-                && HatSettings.debugAutoTap(player.getUUID())) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) {
+            return;
+        }
+        // 下线时链路状态（AGES）没有收掉：重进后会接着旧进度跑，但音乐不会重新开始，
+        // 表现就是音画不同步（摘帽子再戴会从头重开，所以那样能修好）。
+        // 这里按「重新进服」收掉，让他下一次靠近敌人时音乐和谱面一起从 0 开始。
+        if (AGES.containsKey(player.getUUID())) {
+            end(player.serverLevel(), player, "重新进服");
+        }
+        // 客户端重进之后没有那条 BGM 声道了：把「在响」的记录忘掉，
+        // 不然下一轮 start 时会被去重逻辑当成「已经在响」，曲子就再也不播。
+        HatMusic.forgetBrainrot(player.getUUID());
+        JOIN_GRACE.put(player.getUUID(),
+                player.serverLevel().getGameTime() + REJOIN_GRACE_TICKS);
+        if (HatSettings.debugAutoTap(player.getUUID())) {
             BrainrotQte.setAutoTap(player, true);
             HatNetwork.sendAutoTapTo(player, true);
         }
@@ -289,16 +356,46 @@ public final class BrainrotCycle {
         UUID id = wearer.getUUID();
         Integer stored = AGES.get(id);
 
+        // 这顶帽子只认两种戴帽者：玩家和 Khragg。
+        // 别的生物（promaid 女仆、捡了帽子的僵尸、别的模组塞过来的生物……）
+        // 戴着它只是装饰：不进脑蚀链路、不召唤 Teto、也不放这首曲子。
+        // 以前它们会照跑整条链路 —— 那就是「一只女仆把 Teto 和 BGM 全叫出来了」。
+        if (!isAllowedWearer(wearer)) {
+            if (stored != null) {
+                end(level, wearer, "戴帽者不是玩家/Khragg");
+            }
+            return;
+        }
+
         if (!wearsBrainrot(wearer) || wearer.isDeadOrDying() || wearer.isSpectator()) {
+            if (!wearsBrainrot(wearer)) {
+                // 帽子不在身上（摘了 / 换帽 / 从饰品栏拿走）：曲子一定停。
+                // 只发一次，代价可以忽略（见 HatMusic#stopBrainrot）。
+                HatMusic.stopBrainrot(level, wearer);
+            }
             if (stored != null) {
                 String why = !wearsBrainrot(wearer) ? "摘帽/换帽"
                         : wearer.isDeadOrDying() ? "戴帽者死亡" : "戴帽者进入观战";
+                if (!wearsBrainrot(wearer) && !wearer.isDeadOrDying() && !wearer.isSpectator()) {
+                    // 帽子没了、人还在：自己摘的 / 被敌人磨穿的，两套不满各说各的。
+                    // 先说话再收场 —— end() 会把她一起清掉，之后就没机会开口了。
+                    sayHatOff(level, wearer);
+                }
                 end(level, wearer, why);
             }
             return;
         }
 
         if (stored == null) {
+            // （重）进游戏后的前 2 秒先不启动：等客户端世界、实体、声音都准备好。
+            // 否则音乐包可能先到 / 世界还没建好，谱面钟先走了，音画就不同步。
+            Long readyAt = JOIN_GRACE.get(id);
+            if (readyAt != null) {
+                if (level.getGameTime() < readyAt) {
+                    return;
+                }
+                JOIN_GRACE.remove(id);
+            }
             // 和别的帽子一致：附近没有合法目标就不开新的一轮
             if (HatAbilities.findNearestEnemy(wearer) == null) {
                 return;
@@ -325,10 +422,18 @@ public final class BrainrotCycle {
             // 调参器里的「自动打拍」：开着就由服务端替他踩拍（这一轮不发成就）
             if (wearer instanceof ServerPlayer autoPlayer && BrainrotQte.autoTapping(wearer)) {
                 BrainrotQte.autoTap(autoPlayer, at);
+            } else if (wearer instanceof Khragg khragg && khragg.autoBeat()) {
+                // Khragg 复活返场：节拍由服务端代打，全程满连击
+                BrainrotQte.autoTapMob(khragg, at);
             }
             if (at + 1 >= CYCLE_TICKS) {
                 // 整首放完才判「节奏大师」；中途摘帽 / 死亡 / Teto 团灭都不算
                 BrainrotQte.finishRound(wearer);
+                if (wearer instanceof ServerPlayer player) {
+                    // 她记得有人陪她把一整首听完了
+                    HatSettings.rememberTeto(player.getUUID(), TetoSpeech.CHAIN_END);
+                    TetoMood.adjust(player.getUUID(), 6, level.getGameTime());
+                }
                 end(level, wearer, "整首放完");
                 return;
             }
@@ -351,7 +456,9 @@ public final class BrainrotCycle {
         // 每 10 刻看一眼四只 Teto 还在不在：见过、现在一只都不剩 → 这一轮直接作废，
         // 下一刻从头开始（曲子、时间线、蛛网免疫、召唤物全都清掉）
         if (age % 10 == 0 && checkTetos(level, wearer)) {
-            end(level, wearer, "Teto 团灭");
+            end(level, wearer, "Teto 全部阵亡，链路中断（非破防模式）");
+            // 断链后 3 秒静默期：不然附近还站着敌人，下一刻立刻又起一轮，看着像根本没断
+            TETO_BREAK_UNTIL.put(wearer.getUUID(), level.getGameTime() + TETO_RESTART_LOCK);
             return;
         }
         // 负面效果爆出来的史莱姆/蠹虫：每 5 刻收一次目标
@@ -407,48 +514,70 @@ public final class BrainrotCycle {
     private static final int TETO_MAX_RESPAWNS = 20;
     /** 连空这么多次（每次间隔 10 刻）才认团灭：给拉回轮询留出窗口。 */
     private static final int TETO_MISSING_CHECKS = 3;
+    /** Teto 阵亡断链后的静默期（刻）：3 秒内不许重新起手。 */
+    private static final int TETO_RESTART_LOCK = 60;
+    /** 谁还在断链静默期里（值 = 解禁的游戏刻）。 */
+    private static final Map<UUID, Long> TETO_BREAK_UNTIL = new HashMap<>();
+    /** 这一轮已经放过同伴（唐嘉琦）的人。 */
+    private static final java.util.Set<UUID> TANG_SPAWNED = new java.util.HashSet<>();
+    /** 同伴（唐嘉琦）总开关：**雪藏中**，改 true 就恢复「正片开始时召唤一只」。 */
+    private static final boolean TANG_ENABLED = false;
 
     private static boolean checkTetos(ServerLevel level, LivingEntity wearer) {
         UUID id = wearer.getUUID();
-        int alive = level.getEntitiesOfClass(Teto.class,
-                wearer.getBoundingBox().inflate(128.0D), teto -> teto.isOwnedBy(wearer)).size();
-        // 128 格里「不管属于谁」还剩几只：区分「真的没了」和「在、但认不出主人」
-        int anyNearby = level.getEntitiesOfClass(Teto.class,
-                wearer.getBoundingBox().inflate(128.0D)).size();
-        if (alive == 0) {
-            // 128 格里数不到不代表没了：被技能挪走 / 摘掉又拉回的时候会短暂数不到，
-            // 全服范围再找一遍，有就照常继续。
-            for (ServerLevel any : level.getServer().getAllLevels()) {
-                for (Entity anyTeto : any.getEntities().getAll()) {
-                    if (anyTeto instanceof Teto teto && teto.isOwnedBy(wearer)) {
-                        alive++;
-                        break;
-                    }
-                }
-                if (alive > 0) {
-                    break;
-                }
+        // 数「名下还有几只」走 Teto 自己的 UUID 名册（跨维度、不经过实体查询）。
+        // 以前用 getEntitiesOfClass + getEntities().getAll()：实体管理器被模组换掉之后
+        // 两条路都可能是空的，于是链路以为团灭、一直补人。
+        // 坐着的**不算**：她这一轮不上场，不能因为她还在就认为「场上还有 Teto」。
+        // 「还在转的」= 本轮召唤出来的、没留守的、还活着的。
+        // 留守的那只不算，散养的也不算 —— 她们都不参与这一轮。
+        int alive = 0;
+        for (Teto teto : Teto.ownedBy(wearer)) {
+            if (teto.isSummoned() && !teto.isSitting() && !teto.isDeadOrDying()) {
+                alive++;
             }
         }
+        // 诊断用：128 格里「不管属于谁」还剩几只（只进日志，不参与判断）
+        int anyNearby = level.getEntitiesOfClass(Teto.class,
+                wearer.getBoundingBox().inflate(128.0D)).size();
         if (alive > 0) {
             TETO_SEEN.put(id, Boolean.TRUE);
             TETO_MISSING.remove(id);
+            // 有活着的时候把「补人额度」还回去：额度是防死循环的，不是一轮的总量限制。
+            // 之前被外部一遍遍抹掉，20 次额度用完就再也不补了，看着像「禁止生成」。
+            TETO_RESPAWNS.remove(id);
             return false;
         }
         if (!Boolean.TRUE.equals(TETO_SEEN.get(id))) {
             return false;                       // 还没放出来过，不算「没了」
         }
-        // **不判团灭**：被谁清掉都只是「补 4 只新的」，链路照常往下走。
-        // 结束一轮的条件是曲子放完 / 摘帽子，不该是「Teto 不在了」。
+        if (Teto.hasSitting(wearer)) {
+            return false;               // 她留守了：这一轮本来就没有 Teto，不是「被打光了」
+        }
+        // 非破防模式：会转的那几只**全部**死了 = 这一轮到此为止（调用方负责收场 + 3 秒静默期）。
+        // 破防模式不认这条：她本来也死不掉，就算被绕过去也只补新的，链路不中断。
+        if (!HatSettings.forceBreak()) {
+            HatMod.LOGGER.warn("[hatmod] 脑蚀链路：本轮 Teto 全部阵亡（非破防模式），中断这一轮"
+                            + "（128 格内共 {} 只 Teto）", anyNearby);
+            return true;
+        }
+        // 破防模式：不中断链路，被清掉就**补一只**回来（一只就够把这一轮续上）
         int respawns = TETO_RESPAWNS.getOrDefault(id, 0);
         if (respawns >= TETO_MAX_RESPAWNS) {
             return false;
         }
         TETO_RESPAWNS.put(id, respawns + 1);
-        HatMod.LOGGER.warn("[hatmod] 脑蚀链路：Teto 被清空，第 {} 次补回来"
+        HatMod.LOGGER.warn("[hatmod] 脑蚀链路：Teto 被清空，第 {} 次补一只回来"
                         + "（链路不重跑；128 格内共 {} 只 Teto，属于本人的 {} 只）",
                 respawns + 1, anyNearby, alive);
-        HatSummons.spawnTetos(level, wearer);
+        HatSummons.spawnOneTeto(level, wearer);
+        // 她说一句「重来」，和开场白分开（一局里可能补好几次）；
+        // 3 秒冷却只是防刷屏，不是「不播」—— 每次真的补回来都会说。
+        if (wearer instanceof ServerPlayer) {
+            TetoTalk.sayCooled(level, wearer, 48.0D, "resing", 60, TetoSpeech.pick(
+                    level.random, TetoSpeech.summonsOf(wearer.getUUID()),
+                    "hatmod.teto.resing", 2, 1));
+        }
         return false;
     }
 
@@ -532,22 +661,136 @@ public final class BrainrotCycle {
         }
     }
 
+    /**
+     * 链路期间帽子没了：她不高兴。
+     *
+     * <p>两种原因分开说：玩家自己摘 / 换帽（{@code hatoff.self}），
+     * 或者被敌人打到耐久磨穿（{@code hatoff.broken}，见 {@code HatSettings#hatBrokeRecently}）。
+     * 词按见面次数分层（第一次 / 第二次 / 第三次往后）。
+     */
+    private static void sayHatOff(ServerLevel level, LivingEntity wearer) {
+        if (!(wearer instanceof ServerPlayer player)) {
+            return;                     // 生物戴帽子不带台词（和别的触发点一致）
+        }
+        boolean broken = HatSettings.hatBrokeRecently(player.getUUID(), level.getGameTime());
+        TetoTalk.sayTo(player, TetoSpeech.pick(level.random,
+                TetoSpeech.summonsOf(player.getUUID()),
+                broken ? "hatmod.teto.hatoff.broken" : "hatmod.teto.hatoff.self", 3, 2));
+    }
+
+    /**
+     * 能不能启动「脑蚀」链路：只有玩家和 Khragg。
+     *
+     * <p>别的生物戴着这顶帽子时**只是戴着**：不召唤 Teto、不放 BGM、不接管。
+     * 刷怪蛋 / 指令直接放出来的 Teto 是另一回事 —— 那是实体本身，不是帽子召唤的。
+     */
+    private static boolean isAllowedWearer(LivingEntity wearer) {
+        return wearer instanceof ServerPlayer || wearer instanceof Khragg;
+    }
+
     private static boolean wearsBrainrot(LivingEntity living) {
         return HatAbilities.hatStack(living).getItem() == HatItems.BRAIN_HAT.get();
     }
 
     private static void start(ServerLevel level, LivingEntity wearer) {
-        start(level, wearer, "附近有敌人");
+        start(level, wearer, "附近有敌人", false);
     }
 
     private static void start(ServerLevel level, LivingEntity wearer, String why) {
+        start(level, wearer, why, false);
+    }
+
+    private static void start(ServerLevel level, LivingEntity wearer, String why, boolean forced) {
+        Long lockUntil = TETO_BREAK_UNTIL.get(wearer.getUUID());
+        if (lockUntil != null) {
+            if (level.getGameTime() < lockUntil) {
+                return;                 // 刚被 Teto 阵亡打断过：3 秒静默期，谁也不许起手
+            }
+            TETO_BREAK_UNTIL.remove(wearer.getUUID());
+        }
         HatMod.LOGGER.warn("[hatmod] 脑蚀链路：起手（{}）", why);
         // 神隐不在这里给：起手那一刻附近还没几个怪，给了基本白给。
         // 改到第一句歌词唱完时（见 applyTimeline），结束时间不变，还是「Nope, too late」那一刻。
         HatMusic.playBrainrot(level, wearer);
         SPIN_SENT.put(wearer.getUUID(), false);
         // 这一轮的后室 Teto：曲子结束或摘帽时会自己发现循环没了，这里只是把它们放出来
-        HatSummons.spawnTetos(level, wearer);
+        // 附近有散养的 Teto 就直接收编，收编不了才重新召唤。
+        // 名下有坐着的（玩家让她原地待命）：这一轮她完全不上场 —— 不收编、不放新的、
+        // 也不说开场白（开场白是「她来了」的意思，她没来就别替她说话）。
+        if (Teto.hasSitting(wearer)) {
+            HatMod.LOGGER.info("[hatmod] 脑蚀链路：{} 名下有一只坐着的 Teto，这一轮不放新的",
+                    wearer.getName().getString());
+        } else {
+            boolean adopted = HatSummons.adoptFreeTeto(level, wearer);
+            if (!adopted) {
+                // 真放进了世界才算一次**成功召唤**（放失败、被守卫挡下都不算），
+                // 台词按这个次数分层（见 TetoSpeech）。
+                if (HatSummons.spawnTetos(level, wearer) > 0
+                        && wearer instanceof ServerPlayer player) {
+                    HatSettings.addTetoSummon(player.getUUID(), level.getGameTime());
+                }
+            }
+            // 开场白**每一轮都要说**：以前收编成功就整段跳过（`else if`），
+            // 而曲终必留一只、下一轮必然走收编 —— 结果从第二轮起再也听不到开场白。
+            sayOpening(level, wearer, forced, adopted);
+        }
+        if (wearer instanceof ServerPlayer player && HatSettings.forceBreak()) {
+            // 她见过你开破防模式 —— 这个记忆会让她在闲聊时提一句
+            HatSettings.rememberTeto(player.getUUID(), TetoSpeech.BREAK_MODE);
+        }
+        // 开歌：所有 Teto 的动作强制回到原来那套 —— 曲中的动作必须和谱面对齐，
+        // 玩家自己切过的在这里统一作废（曲中也不让切，见 TetoAction）。
+        for (Teto teto : Teto.ownedBy(wearer)) {
+            teto.setActionIndex(Teto.ACTION_ORIGINAL);
+            // 每一轮起手都把血补满：上一轮被打掉的伤不该带进这一轮
+            teto.setHealth(teto.getMaxHealth());
+        }
+        SONIC_FIRED.remove(wearer.getUUID());
+    }
+
+    /** 开场白每池几条（和语言文件里的 {@code hatmod.teto.start.natural.N} / {@code .forced.N} 对应）。 */
+    private static final int OPENING_LINES = 6;
+
+    /** 第二次 / 第三次往后那两套开场白各几条。 */
+    private static final int OPENING_LINES_LATER = 3;
+
+    /**
+     * Teto 的开场白：接敌起手和 P 键手动起手**各说各的池子**（各六选一，随机）。
+     *
+     * <p>走聊天栏而不是屏幕大字 —— 开场那一刻画面已经被黑暗和倒计时占满，
+     * 再压一行字只会打架。曲终评价同理，都让她「开口说话」。
+     */
+    private static void sayOpening(ServerLevel level, LivingEntity wearer, boolean forced) {
+        sayOpening(level, wearer, forced, false);
+    }
+
+    /**
+     * @param adopted 这一轮是「就地收编」上一轮留下的那只（不是新放出来的）
+     */
+    private static void sayOpening(ServerLevel level, LivingEntity wearer, boolean forced,
+                                   boolean adopted) {
+        // 戴帽子的**不是玩家**（僵尸、别模组塞过来的生物）：这一轮没有台词。
+        // 链路本身照跑（光柱、Teto、BGM 都有），只是她不替一只怪说话。
+        if (!(wearer instanceof ServerPlayer player)) {
+            return;
+        }
+        // 她记得挨过打：有四成机会换成另一组开场白
+        if (HatSettings.tetoHitFresh(player.getUUID(), level.getGameTime())
+                && level.random.nextDouble() < 0.4D) {
+            TetoTalk.sayNear(level, wearer, 48.0D,
+                    TetoTalk.pick(level.random, "hatmod.teto.start.hit", 2));
+            return;
+        }
+        // 这一轮是她「又被叫上场」：三成机会换成收编那组话，其余照旧走开场白
+        if (adopted && level.random.nextFloat() < 0.35F) {
+            TetoTalk.sayNear(level, wearer, 48.0D, TetoSpeech.pick(level.random,
+                    TetoSpeech.summonsOf(player.getUUID()), "hatmod.teto.adopt", 2, 1));
+            return;
+        }
+        String base = forced ? "hatmod.teto.start.forced" : "hatmod.teto.start.natural";
+        // 开场白也分层：第一次 / 第二次 / 第三次往后各是一套（见 TetoSpeech#pick）
+        TetoTalk.sayNear(level, wearer, 48.0D, TetoSpeech.pick(level.random,
+                TetoSpeech.summonsOf(player.getUUID()), base, OPENING_LINES, OPENING_LINES_LATER));
     }
 
     /**
@@ -562,13 +805,20 @@ public final class BrainrotCycle {
         if (!(wearer.level() instanceof ServerLevel level)) {
             return false;
         }
+        if (!isAllowedWearer(wearer)) {
+            return false;               // 白名单外的生物：P 键也开不起来
+        }
         if (!wearsBrainrot(wearer) || wearer.isDeadOrDying() || wearer.isSpectator()) {
             return false;
         }
         if (AGES.containsKey(wearer.getUUID())) {
             return false;
         }
-        start(level, wearer, "P 键强行开");
+        Long lockUntil = TETO_BREAK_UNTIL.get(wearer.getUUID());
+        if (lockUntil != null && level.getGameTime() < lockUntil) {
+            return false;               // 断链静默期里 P 键也不许起手
+        }
+        start(level, wearer, "P 键强行开", true);
         BrainrotQte.beginRound(wearer, false);
         AGES.put(wearer.getUUID(), 0);
         // 记下「这一轮是 P 键强行开起来的」：这期间才允许打被动 / 无害生物
@@ -579,6 +829,20 @@ public final class BrainrotCycle {
     /** 曲终 / 摘帽 / 死亡：把这一轮留下的东西全部收掉。 */
     private static void end(ServerLevel level, LivingEntity wearer) {
         end(level, wearer, "未说明");
+    }
+
+    /**
+     * 玩家自己拿脑蚀把她叫走（见 {@code TetoDismiss}）：立刻收场。
+     *
+     * <p>不走「Teto 全部阵亡」那条（要等 3 × 10 刻才判定），也不留那一只散养的 ——
+     * 玩家明确说了要她走。静默期照旧给：不然下一刻附近还有敌人，链路马上又开一轮。
+     */
+    static void dismissByPlayer(ServerLevel level, LivingEntity wearer) {
+        if (!AGES.containsKey(wearer.getUUID())) {
+            return;
+        }
+        end(level, wearer, "玩家拿脑蚀叫她走");
+        TETO_BREAK_UNTIL.put(wearer.getUUID(), level.getGameTime() + TETO_RESTART_LOCK);
     }
 
     /**
@@ -605,12 +869,20 @@ public final class BrainrotCycle {
         TETO_SEEN.remove(id);
         TETO_MISSING.remove(id);
         TETO_RESPAWNS.remove(id);
+        TANG_SPAWNED.remove(id);
+        // 静默期过期的条目顺手清掉（还在期内的留着：断链那一刻是「先 end 再上锁」）
+        TETO_BREAK_UNTIL.entrySet().removeIf(entry -> entry.getValue() <= level.getGameTime());
+        SONIC_FIRED.remove(id);
         BrainrotQte.clear(wearer);
         // 曲终/摘帽时还钉着的人要立刻放掉，别留着一条永远到不了期的 Pin
         PINNED.clear();
         releaseAllShots();
 
-        HatSummons.clearTetos(level, wearer);
+        // 曲终 / 摘帽：留一只散养的继续跟着玩家；死亡 / 观战不留（那会儿她找不到主人，
+        // 会改认旁边的玩家，反而乱）。下一轮她会就地被收编，不会多出新的。
+        HatSummons.clearTetos(level, wearer, wearer.isAlive() && !wearer.isSpectator());
+        // 同伴没有「留下」这种待遇：这一轮结束就跟着走
+        HatSummons.clearTang(level, wearer);
         BrainrotMinions.clear(level, wearer);
         HatNetwork.sendBeamTarget(wearer, false, NO_IDS, 0);
         HatNetwork.sendBrainrotSpin(wearer, false);
@@ -637,19 +909,27 @@ public final class BrainrotCycle {
     // ------------------------------------------------------------------
 
     private static void applyTimeline(ServerLevel level, LivingEntity wearer, int age) {
+        // 前奏（0 – 427 刻）：不给任何加成，能做的只有按拍击退（见 BrainrotQte）。
+        // 注意这里**不再挂 Darkness 药水**：开局的黑不是「挖掉视野」，而是客户端在画面上
+        // 叠的一层冷色 + 暗角（QteHud#renderIntroDim），世界还看得见，只是暗。
+        if (age < BrainrotBeats.INTRO_END) {
+            return;
+        }
+
         // 0 – 12 秒：黑暗（+ 抗性提升 II / 生命恢复 II）
         if (age < DARKNESS_END) {
             refreshDarknessShelter(wearer);
         }
 
         // 第一句歌词唱完那一刻才开始神隐（整段清仇恨，一直到「Nope, too late」）
-        if (age == BrainrotLyrics.endTick(0) && TEXT_FIRST > age) {
+        int lastBefore = BrainrotLyrics.lastIndexBefore(TEXT_FIRST);
+        if (lastBefore >= 0 && age == BrainrotLyrics.endTick(lastBefore) && TEXT_FIRST > age) {
             HatAbilities.grantFullVeil(wearer, TEXT_FIRST - age);
         }
 
         // 「Nope, too late」那一段戴帽者脚下发沉：第一人称还会被扳视线，第三人称就只有这份沉重感。
         // 只续 8 刻 —— 窗口一过两秒内自己掉干净，不会拖到后面的光束段。
-        if (age >= TEXT_FIRST - TEXT_FREEZE_LEAD && age < TEXT_FIRST + TEXT_TICKS + FOCUS_EXTRA_TICKS) {
+        if (age >= STILL_START && age < STILL_RELEASE) {
             wearer.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SLOWDOWN, 8, 1, false, false, false));
         }
 
@@ -658,9 +938,11 @@ public final class BrainrotCycle {
             shockwave(level, wearer);
         }
 
-        // 和 Teto 停转同一段：提前 6 刻（「No」刚要出声）开始，50 格内所有人原地定住
-        if (age == TEXT_FIRST - TEXT_FREEZE_LEAD) {
-            stasisNearby(level, wearer);
+        // 和 Teto 站定同一段：就在它切进那段特有动作的那一刻定住，一直定到站定收尾 ——
+        // 三个词（260 / 269 / 278）全在这段里，词落下来的时候场上已经是静止的；
+        // 一直压到 Teto 重新动起来的前一刻，和镜头一起放。
+        if (age == STILL_START) {
+            stasisNearby(level, wearer, STILL_RELEASE - STILL_START);
         }
 
         // 14 秒起：原地自转 + 迅捷 I
@@ -706,10 +988,23 @@ public final class BrainrotCycle {
         if (age == SONIC_PAUSE_START) {
             stasisNearby(level, wearer, SONIC_BEAM_PAUSE);
         }
-        // 43.08 秒：那一声落下，声波铺开；定住在同一刻解除
-        if (age == SONIC_AT) {
-            beginSonic(level, wearer);
+        // 同伴（唐嘉琦）：**前奏结束、正片开始**的那一刻才造出来。
+        // age 是每刻按真实时间推进的（掉帧时一次可能走 2~3 刻），所以不能写 `age == INTRO_END`，
+        // 用一张 Set 记「这一轮已经放过了」，到点之后第一次满足就放，且只放一次。
+        // 【雪藏】唐嘉琦暂时不上场：代码、贴图、行为都留着，把 TANG_ENABLED 改成 true 就回来。
+        if (TANG_ENABLED && age >= BrainrotBeats.INTRO_END && TANG_SPAWNED.add(wearer.getUUID())) {
+            HatSummons.spawnTang(level, wearer);
         }
+        // 光柱期间补 3 个 Teto 分身（无台词）；两段光柱各收一次
+        if (age == FIRE_START || age == FIRE2_START) {
+            HatSummons.spawnBeamExtras(level, wearer);
+        }
+        if (age == PAUSE_START || age == SLOW_DARK_AT) {
+            HatSummons.clearBeamExtras(level, wearer);
+        }
+
+        // 43.08 秒：那一声落下 —— 但声波**不再自己放**：得玩家踩中 SONIC_NOTE 那一拍
+        // （见 onNoteHit）。定身仍在同一刻解除，那只是「把舞台让给这一声」。
 
         // 57 秒：停火、停转；漂浮 + 黑暗
         if (age == PAUSE_START) {
@@ -812,6 +1107,61 @@ public final class BrainrotCycle {
     private static final int TEXT_TICKS = 16;
 
     /**
+     * 第一次「Nope, too late」那一下，Teto 的**特有动作**落在第几刻 —— 量出来的，不是估的。
+     *
+     * <p>把 {@code teto.png} 的 284 帧按剪影逐帧比对：循环段（帧 143–283）能复现前奏
+     * 0–125 帧的每一个姿态，唯独 **帧 126–141** 一帧都对不上 —— 126 是切镜（相对前一帧
+     * 突变 38.3），128 起姿态安定，141 和 140 的差只有 0.005（等于定格），142 才切回舞蹈。
+     * 按每帧 {@code TetoRenderSettings} 的 2 刻换算，就是下面这三个数。
+     *
+     * <p>三个词（260 / 269 / 278）是按原曲人声的开口时刻定的，不能动 ——
+     * 它们本来就全落在这段站定里（260 在站定里第 8 刻，278 在结束前 4 刻）。
+     * 所以这里统一拿「站定」当锚：定身、停转、缓慢吃整段，定视线再往前留出手臂转动的时间。
+     */
+    private static final int STILL_START = BrainrotBeats.main(252);
+    private static final int STILL_SETTLE = BrainrotBeats.main(254);
+    private static final int STILL_END = BrainrotBeats.main(282);
+
+    /** 站定那段用的序列帧里最后一帧的编号：126–141 是站定，141 收尾。 */
+    private static final int STILL_LAST_FRAME = 141;
+    /** 序列图每帧占几刻 —— 和 {@code TetoRenderSettings.DEFAULT_FRAME_TICKS} 一致。 */
+    private static final int STILL_FRAME_TICKS = 2;
+    /**
+     * 序列图的相位补偿（刻）：第 0 帧比正片起点晚 7 刻才播
+     * （见 {@code TetoRenderSettings.DEFAULT_FRAME_OFFSET}）。
+     */
+    private static final int STILL_FRAME_OFFSET = 0;
+
+    /**
+     * 站定整段的真正收尾：**最后一帧播完、下一帧（切回舞蹈）出现的前一刻**。
+     *
+     * <p>126–141 这 16 帧就是那段站定。按每帧 {@link #STILL_FRAME_TICKS} 刻、再加上
+     * {@link #STILL_FRAME_OFFSET} 刻的补偿，最后一帧占正片段第 {@code 7 + 141 × 2 = 289}
+     * 刻到第 {@code 290} 刻，下一帧从 {@code 7 + 142 × 2 = 291} 刻开始 ——
+     * 换成链路年龄就是 {@code main(291)}。
+     *
+     * <p>{@link #STILL_END}（{@code main(282)}）是只按「141 帧 × 2 刻」算的，漏了那 7 刻，
+     * 比实际动作早 9 刻撒手：镜头一松，Teto 还在摆最后两帧，所以才看不清。
+     * 这里改按序列图自己的帧边界算，窗口收在它重新动起来的前一刻，不多不少。
+     */
+    private static final int STILL_HOLD_END = BrainrotBeats.main(
+            STILL_FRAME_OFFSET + (STILL_LAST_FRAME + 1) * STILL_FRAME_TICKS);
+
+    /**
+     * 撒手点：镜头 / 定身 / 缓慢比「动作还原」**再提前 0.2 秒（4 刻）**收回。
+     *
+     * <p>以前一直咬到最后一帧播完，可最后那几刻她其实已经在往普通动作上摆了 ——
+     * 玩家视线还被扳着、身上还挂着缓慢，看着就是「她都不动了，镜头还没松」。
+     */
+    private static final int STILL_RELEASE_LEAD = 4;
+    private static final int STILL_RELEASE = STILL_HOLD_END - STILL_RELEASE_LEAD;
+
+    /** 站定开始那一刻（客户端定视线要对准到这一只）。 */
+    public static int stillStart() {
+        return STILL_START;
+    }
+
+    /**
      * Teto 现在要不要停转：**和「定视线 + 缓慢」同一个窗口**。
      *
      * <p>停在圆周上的当前位置、只跟着戴帽者平移（与玩家相对静止）。以前这里收在字幕刚弹完
@@ -834,8 +1184,8 @@ public final class BrainrotCycle {
     /**
      * Teto 的绕圈倍率：光束在放的时候转两倍快。
      *
-     * <p>召唤时算「停在正前方」用的相位对齐是第 {@link #TEXT_FIRST} 刻（13 秒，还没进光束），
-     * 那时倍率是 1，所以对齐不受影响。
+     * <p>「停在正前方」那段对齐在 {@link #firstTextTick()} 之前就结束了（还没进光束，
+     * 倍率是 1），所以这里的 2 倍不会把那一圈算歪。
      */
     /** 光束期 Teto 绕圈半径的鼓胀幅度：±35%（4 格 → 2.6–5.4 格）。 */
     private static final double ORBIT_BREATH = 0.35D;
@@ -951,7 +1301,7 @@ public final class BrainrotCycle {
         // 力量/虚弱也作用在光柱上（牛仔帽同款）：红帽的「照射期力量 I」天然 ×1.35
         float power = HatAbilities.beamPowerMultiplier(wearer);
         // 帧伤 = 黑帽那份配置 × 脑蚀倍率（默认 1.5，可在调参器「脑蚀」页改）
-        // × 打拍连击倍率（每连击 +10%，封顶 ×4.0）× 力量倍率
+        // × 打拍连击倍率（每连击 +0.4%，不封顶）× 力量倍率
         float flat = HatSettings.damagePerTick(HatType.BLACK) * HatSettings.brainrotDamageScale()
                 * BrainrotQte.damageMultiplier(wearer) * power;
         // 打中一拍后的「涌动」：光柱这一刻更长更粗，倍率随剩余时间缩回 1
@@ -967,9 +1317,21 @@ public final class BrainrotCycle {
         //     连击一上来立刻见效、不用等涌动，所以「打得快」；PERFECT 一次涨 2 层，成型也快；
         //   · 涌动再加一层：(涌动粗细 - 1) × 3%，PERFECT 峰值再 +2.4%/刻。
         // 用 getHealth（当前值）：越打越少、自动衰减，不会变成秒杀。
-        // 连击倍率同样乘在百分比上（无上限、每层 +2%）；涌动那层也在里面
+        // 连击倍率同样乘在百分比上（每层 +0.4%、不封顶）；涌动那层也在里面
+        // 百分比那一层再乘一个倍率：调参器「脑蚀」页可调，出厂 0.5（= 原来的一半）
         final double accentRatio = (0.005D + (surge[1] - 1.0D) * 0.03D)
+                * HatSettings.brainrotPercentScale()
                 * BrainrotQte.damageMultiplier(wearer) * power;
+        // 每 5 秒把「连击 / 倍率 / 这一刻的帧伤和百分比」写一行日志，
+        // 调伤害的时候直接看这行，不用猜是哪一层在涨。
+        if (level.getGameTime() % 100 == 0L) {
+            HatMod.LOGGER.info("[hatmod] 脑蚀光柱：连击 {}，倍率 ×{}，帧伤 {}，百分比 {}/刻（目标 {}）",
+                    BrainrotQte.comboOf(wearer),
+                    String.format("%.2f", BrainrotQte.damageMultiplier(wearer)),
+                    String.format("%.1f", flat),
+                    String.format("%.3f%%", accentRatio * 100.0D),
+                    targets.size());
+        }
         Vec3 origin = HatAbilities.beamOrigin(wearer, 1.0F);
         Set<UUID> hitThisTick = new HashSet<>();
         int beams = Math.min(BEAM_LANES, targets.size());
@@ -1083,6 +1445,29 @@ public final class BrainrotCycle {
             }
         }
         return targets;
+    }
+
+    /**
+     * 打拍踩中一拍：如果正好是「那一声」那一拍，就把声波放出去。
+     *
+     * <p>长音只认头拍 —— QTE 在长音里本来就只在头拍算一次（之后是按住涨连击），
+     * 所以这里不需要再判断「是不是长音的头」。
+     */
+    static void onNoteHit(LivingEntity wearer, int tick) {
+        if (tick != SONIC_NOTE) {
+            return;
+        }
+        if (!(wearer.level() instanceof ServerLevel level) || !isRunning(wearer)) {
+            return;
+        }
+        if (!SONIC_FIRED.add(wearer.getUUID())) {
+            return;
+        }
+        beginSonic(level, wearer);
+        // 黑白闪 + 锁视线跟着这一包走：没放出声波就一样都不给
+        if (wearer instanceof ServerPlayer player) {
+            HatNetwork.sendSonicFlash(player, SONIC_MONO_TICKS, SONIC_LOCK_TICKS);
+        }
     }
 
     /** 射程内的所有合法敌人，按距离从近到远。 */
@@ -1226,6 +1611,7 @@ public final class BrainrotCycle {
                 wearer.getBoundingBox().inflate(SHOCK_RADIUS))) {
             if (target == wearer || target instanceof net.minecraft.world.entity.player.Player
                     || !target.isAlive() || HatAbilities.isFriendlyTo(wearer, target)
+                    || Teto.isBulletAngel(target)
                     || target.distanceToSqr(origin) > rangeSq) {
                 continue;
             }
@@ -1505,7 +1891,10 @@ public final class BrainrotCycle {
         if (living instanceof Mob mob) {
             mob.setTarget(null);
             mob.getNavigation().stop();
-            mob.setNoAi(true);
+            // 关 AI 统一走 HatAbilities：到点由那份登记按 UUID 还回去。
+            // 以前这里是裸的 setNoAi(true)，解除时没人打开 —— 被钉过的怪会一直停在原地，
+            // 漂在空中的就永远挂在半空（区块一卸载还会把 NoAI:1 写进 NBT）。
+            HatAbilities.suppressAi(mob, until);
         }
         // 已经在钉的话沿用原来的锚点：不然每刷一次就「以当前位置为新原位」，
         // 被推一下就把锚点也带走了
@@ -1591,11 +1980,11 @@ public final class BrainrotCycle {
     }
 
     /**
-     * Teto 摆动作时**定格用哪一帧**：定格在字幕出现那一刻（{@link #TEXT_FIRST}）的画面 ——
-     * 那个小动作就是掐着这一声做的。
+     * Teto 摆动作时**定格用哪一帧**：定格在姿态安定的那一刻（{@link #STILL_SETTLE}）——
+     * 切镜那一帧还在动（帧 126），定住会是个半截姿态；安定的那帧（127）才是那段站定的样子。
      */
     public static int tetoPoseTick() {
-        return TEXT_FIRST;
+        return STILL_SETTLE;
     }
 
     /**
@@ -1603,9 +1992,13 @@ public final class BrainrotCycle {
      *
      * <p>Teto 是链路开始时召唤的，{@code tickCount} 和链路年龄基本同一条线，
      * 所以客户端不走网络也能自己算出来。
+     *
+     * <p>这里只到 {@link #STILL_END}，那是「帧号 × 2 刻」直接算的粗刻度；序列图还有
+     * {@link #STILL_FRAME_OFFSET} 刻相位补偿，实际要摆到 {@link #STILL_HOLD_END} 前一刻。
+     * 镜头 / 定身 / 缓慢都跟着后一个走。
      */
     public static boolean tetoPoseWindow(int tickCount) {
-        return tickCount >= TEXT_FIRST - TEXT_FREEZE_LEAD && tickCount < TEXT_FIRST + TEXT_TICKS;
+        return tickCount >= STILL_SETTLE && tickCount < STILL_END;
     }
 
     /**
@@ -1615,45 +2008,45 @@ public final class BrainrotCycle {
      */
     private static final int FOCUS_EXTRA_TICKS = 7;
 
-    /** 定视线比「定身 / 停转 / 缓慢」再早多少刻开始：0.3 秒 —— 镜头转过去本身要时间。 */
-    private static final int FOCUS_LEAD_EARLY = 6;
+    /**
+     * 定视线比「站定 / 定身 / 停转」再早多少刻开始：**10 刻（0.5 秒）**。
+     *
+     * <p>镜头是每刻转掉剩余角度的 35%（见 {@code TetoFocus.TURN_PER_TICK}），到第 10 刻只剩
+     * 1.3%，等于完全到位。原来是 6 刻，可那 6 刻正好吃掉站定开头的 0.3 秒 —— 玩家还在把镜头
+     * 扳过去，那段特有动作已经开始了。现在提前到站定前 0.5 秒，站定那一刻人已经盯着它。
+     */
+    private static final int FOCUS_LEAD_EARLY = 10;
 
     /**
-     * 客户端强制视线的窗口：比摆动作那段**多 {@link #FOCUS_EXTRA_TICKS} 刻**，
+     * 客户端强制视线的窗口：收在 {@link #STILL_RELEASE}（动作还原前 0.2 秒），
      * 另外**提前 {@link #FOCUS_LEAD_EARLY} 刻开始**。
      *
      * <p>镜头是慢慢扳过去的，扳过去本身要 0.3 秒左右 —— 动作一结束就撒手，
-     * 人只会看到"还没转到就先弹回来了"。所以两头都留足。
+     * 人只会看到"还没转到就先弹回来了"。所以两头都留足：前面 0.5 秒把镜头转过去，
+     * 后面一直咬到它真正重新动起来的前一刻，不多不少。
      */
     public static boolean tetoFocusWindow(int tickCount) {
-        return tickCount >= TEXT_FIRST - TEXT_FREEZE_LEAD - FOCUS_LEAD_EARLY
-                && tickCount < TEXT_FIRST + TEXT_TICKS + FOCUS_EXTRA_TICKS;
+        return tickCount >= STILL_START - FOCUS_LEAD_EARLY && tickCount < STILL_RELEASE;
     }
 
-    /** 定身 / Teto 停转 / 缓慢共用的窗口（比定视线晚 0.3 秒开始）。 */
+    /** 定身 / Teto 停转 / 缓慢共用的窗口（比定视线晚 0.3 秒开始，收在下一帧动作出现之前）。 */
     public static boolean tetoFreezeWindow(int tickCount) {
-        return tickCount >= TEXT_FIRST - TEXT_FREEZE_LEAD
-                && tickCount < TEXT_FIRST + TEXT_TICKS + FOCUS_EXTRA_TICKS;
+        return tickCount >= STILL_START && tickCount < STILL_RELEASE;
     }
 
     /** 尖叫锁视线的时长（刻）：1 秒 —— 方向看一眼就够了，锁 40 秒没法玩。 */
     private static final int SONIC_LOCK_TICKS = 20;
 
-    /** 尖叫那一轮的强制视线：只锁声波射出去那一秒。 */
-    public static boolean sonicLockWindow(int age) {
-        return age >= SONIC_AT && age < SONIC_AT + SONIC_LOCK_TICKS;
-    }
+    // 锁视线同理：声波没放出来就不锁（见 client/SonicFlash）。
 
-    /** 尖叫那一轮的黑白画面：只有那一声落下的一瞬。 */
-    public static boolean sonicMonoWindow(int age) {
-        return age >= SONIC_AT && age < SONIC_AT + SONIC_MONO_TICKS;
-    }
+    // 黑白闪 / 锁视线的窗口不再按刻数自己算：声波放出来时由
+    // {@code HatNetwork.sendSonicFlash} 通知客户端（见 client/SonicFlash）。
 
     /** 第一次「Nope, too late」落在第几刻（给 Teto 的轨道相位对齐用）。 */
     static int firstTextTick() {
-        // Teto 在字幕出现前 TEXT_FREEZE_LEAD 刻就停转了，停下来的那个位置才是
-        // 「字幕出现时看到的位置」—— 相位对齐要按这一刻算。
-        return TEXT_FIRST - TEXT_FREEZE_LEAD;
+        // Teto 在站定开始那一刻（STILL_START）就不再绕圈了，停下来的那个位置才是
+        // 「那一下看到的位置」—— 相位对齐要按这一刻算，否则四只会停在斜向之外。
+        return STILL_START;
     }
 
     /** 给 {@code HatAbilities} 之类的地方查询「这个戴帽者现在是不是在脑蚀循环里」。 */
@@ -1703,5 +2096,26 @@ public final class BrainrotCycle {
     public static int ageOf(Entity entity) {
         Integer age = AGES.get(entity.getUUID());
         return age == null ? -1 : age;
+    }
+
+    /**
+     * 戴帽者**现在是不是正在放光柱**。
+     *
+     * <p>给同伴（{@link TangJiaqi}）用：它要和玩家同一刻开火、同一刻收手，所以这里把
+     * 时间线里所有「停火」的门都算进去 —— 两段照射（28.5 秒起 / 71 秒起）、
+     * 中间那次尖叫的 0.3 秒空档、以及 57 秒到 71 秒、100 秒之后的黑暗期。
+     *
+     * <p>和 {@code applyTimeline} 里 {@code fire()} 的两处调用点严格一一对应：
+     * 那边改了窗口，这里必须跟着改，否则同伴的光柱会和玩家错开。
+     */
+    public static boolean beamWindow(LivingEntity wearer) {
+        int age = ageOf(wearer);
+        if (age < 0) {
+            return false;
+        }
+        if (age >= FIRE_START && age < PAUSE_START) {
+            return !inSonicPause(age);
+        }
+        return age >= FIRE2_START && age < SLOW_DARK_AT;
     }
 }

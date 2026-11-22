@@ -1,5 +1,6 @@
 package com.hatmod;
 
+import com.hatmod.guard.HatGuard;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvent;
@@ -198,8 +199,9 @@ public class HatSummon extends PathfinderMob implements OwnableEntity {
         if (this.level().isClientSide) {
             return;
         }
-        // 登记进「删不掉」名册：破防模式下被外人删掉会被拉回来
-        HatAbilities.watchSummon(this);
+        if (HatSettings.forceBreak()) {
+            HatAbilities.watchSummon(this);
+        }
         if (this.life > 0) {
             this.life--;
             if (this.life <= 0) {
@@ -308,6 +310,9 @@ public class HatSummon extends PathfinderMob implements OwnableEntity {
             if (!(entity instanceof Mob mob) || mob instanceof HatSummon) {
                 continue;
             }
+            if (Teto.isBulletAngel(mob)) {
+                continue;                       // 枪弹天使不拉仇恨：她不是这一轮要打的东西
+            }
             LivingEntity current = mob.getTarget();
             boolean hostile = mob instanceof Enemy || current != null;
             if (!hostile) {
@@ -332,6 +337,11 @@ public class HatSummon extends PathfinderMob implements OwnableEntity {
         }
         Entity entity = level.getEntity(id);
         return entity instanceof LivingEntity living && living.isAlive() ? living : null;
+    }
+
+    /** 还剩多少寿命（刻）—— {@code /hatmod summons} 用。 */
+    int lifeLeft() {
+        return this.life;
     }
 
     /** 是不是 {@code owner} 的虚影。 */
@@ -400,14 +410,7 @@ public class HatSummon extends PathfinderMob implements OwnableEntity {
      * <p>不反回去的情形：伤害本身就是 {@code minecraft:thorns}（否则荆棘附魔会互相弹）、
      * 自己人（主人 / 同队 / 其它虚影）。
      */
-    /**
-     * 破防模式下「打不过就加入」：外部想删我们一律不认（pig2 那招），自己的退场走内部开关。
-     *
-     * <p>别的模组的 killEntity / discard / 实体表清理最终都是调 {@code setRemoved}，
-     * 把这里挡住它们就删不掉。正常死亡（KILLED）不受影响。
-     */
     private boolean hatmodSelfRemoval;
-    /** 把它打死的那一位：尸体被删前的那一秒用来反噬。 */
     private Entity hatmodKiller;
 
     @Override
@@ -417,15 +420,14 @@ public class HatSummon extends PathfinderMob implements OwnableEntity {
                 && this.level() instanceof ServerLevel) {
             return;
         }
-        super.remove(reason);
+        HatGuard.beginApprovedRemoval();
+        try {
+            super.remove(reason);
+        } finally {
+            HatGuard.endApprovedRemoval();
+        }
     }
 
-    /**
-     * 帽子本体自己收掉（到期 / 卸下 / 换帽）的那一刻。
-     *
-     * <p>先把内部退场标记打上（这样 {@link #remove} 的防盗门不会拦自己），
-     * 再放一发「尾杀」—— 周围一圈外人陪着一起走，完全照 pig2 的 L4。
-     */
     public void hatmodDismiss() {
         if (this.hatmodSelfRemoval) {
             return;
@@ -436,31 +438,21 @@ public class HatSummon extends PathfinderMob implements OwnableEntity {
         this.discard();
     }
 
-    /**
-     * pig2 那招：外部想把我们写死（{@code setHealth(0)}）一律不认。
-     *
-     * <p>很多 Boss 不走 {@code hurt}，直接 {@code setHealth} 清血；只挡伤害是挡不住的。
-     */
     @Override
     public void setHealth(float health) {
-        if (HatSettings.forceBreak() && !this.hatmodSelfRemoval && health < this.getHealth()) {
+        if (SummonDefense.healthWriteBlocked(this.hatmodSelfRemoval, health, this.getHealth())) {
             return;
         }
-        super.setHealth(health);
+        HatGuard.beginApprovedHealth();
+        try {
+            super.setHealth(health);
+        } finally {
+            HatGuard.endApprovedHealth();
+        }
     }
 
-    /** 这一下是不是玩家 / 自己人打的（破防模式下对它们完全免疫）。 */
     private boolean hatmodFriendlyStrike(DamageSource source) {
-        Entity attacker = source.getEntity();
-        if (attacker instanceof net.minecraft.world.entity.player.Player) {
-            return true;
-        }
-        if (attacker instanceof HatSummon || attacker instanceof Teto) {
-            return true;
-        }
-        LivingEntity owner = this.getOwner();
-        return owner != null && attacker instanceof LivingEntity living
-                && HatAbilities.isFriendlyTo(owner, living);
+        return SummonDefense.friendlyStrike(source, this.getOwner());
     }
 
     @Override
@@ -468,7 +460,6 @@ public class HatSummon extends PathfinderMob implements OwnableEntity {
         if (this.isInvulnerableTo(source)) {
             return false;
         }
-        // 破防模式 = pig2 级：完全打不动（尾杀放在「本体自己收掉」的那一刻）
         if (HatSettings.forceBreak()) {
             return false;
         }
@@ -519,10 +510,6 @@ public class HatSummon extends PathfinderMob implements OwnableEntity {
         this.deathTime = 19;
     }
 
-    /**
-     * 尸体即将被删除的那一秒（{@code deathTime == 19}，下一 tick 就 remove）：
-     * 破防模式下放 pig2 同款反噬。
-     */
     @Override
     protected void tickDeath() {
         if (this.deathTime == 19) {

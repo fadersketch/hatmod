@@ -41,7 +41,11 @@ public final class HatNetwork {
      */
     // "6"：加了闪避通知包（QteDodgeMessage）
     // "7"：加了强制开始链路包（ForceStartMessage）
-    private static final String PROTOCOL = "9";
+    // "11"：打拍状态包带了「判的是哪一拍」（HUD 不再把 MISS 画到隔壁键上）
+    // "12"：加了「按住」包（QteHoldMessage）—— 长音按多久由客户端报真实按键状态
+    // "13"：调参包加了「脑蚀百分比伤害倍率」（调参器「脑蚀」页第二个框）
+    // "15"：加了「BGM 真的响起来了」回执（白帽蓄力等这一拍才开始倒数）
+    private static final String PROTOCOL = "15";
 
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             HatMod.id("main"), () -> PROTOCOL, PROTOCOL::equals, PROTOCOL::equals);
@@ -83,6 +87,47 @@ public final class HatNetwork {
                 ForceStartMessage::encode, ForceStartMessage::decode, ForceStartMessage::handle);
         CHANNEL.registerMessage(13, AutoTapMessage.class,
                 AutoTapMessage::encode, AutoTapMessage::decode, AutoTapMessage::handle);
+        CHANNEL.registerMessage(14, SonicFlashMessage.class,
+                SonicFlashMessage::encode, SonicFlashMessage::decode, SonicFlashMessage::handle);
+        CHANNEL.registerMessage(15, QteHoldMessage.class,
+                QteHoldMessage::encode, QteHoldMessage::decode, QteHoldMessage::handle);
+        CHANNEL.registerMessage(16, TetoMusicMessage.class,
+                TetoMusicMessage::encode, TetoMusicMessage::decode, TetoMusicMessage::handle);
+        CHANNEL.registerMessage(17, MusicStartedMessage.class,
+                MusicStartedMessage::encode, MusicStartedMessage::decode, MusicStartedMessage::handle);
+    }
+
+    /**
+     * 客户端 -> 服务端：这位戴帽者的 BGM **真的响起来了**（声音引擎把它排上了）。
+     *
+     * <p>白帽的蓄力要等这一下才开始倒数 —— 这样光柱落在音乐哪一拍，就是设计里的那一拍，
+     * 第二轮、第三轮也一样（以前是发包那一刻就倒数，客户端起播只要晚一点，
+     * 第二轮就明显对不上拍）。
+     */
+    public record MusicStartedMessage(int wearerId) {
+
+        public static void encode(MusicStartedMessage msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.wearerId());
+        }
+
+        public static MusicStartedMessage decode(FriendlyByteBuf buf) {
+            return new MusicStartedMessage(buf.readVarInt());
+        }
+
+        public static void handle(MusicStartedMessage msg, Supplier<NetworkEvent.Context> ctx) {
+            NetworkEvent.Context context = ctx.get();
+            context.enqueueWork(() -> {
+                if (context.getSender() != null) {
+                    HatAbilities.noteMusicStarted(context.getSender(), msg.wearerId());
+                }
+            });
+            context.setPacketHandled(true);
+        }
+    }
+
+    /** 客户端回执「BGM 已经开始走了」。 */
+    public static void sendMusicStarted(int wearerId) {
+        CHANNEL.sendToServer(new MusicStartedMessage(wearerId));
     }
 
     /** 通知客户端某个戴帽者「开始/停止照射」，以及它锁定了谁（每道光柱一个 id）。 */
@@ -106,7 +151,33 @@ public final class HatNetwork {
 
     /** 「打拍」的最新判定（连击 / PERFECT-GOOD-MISS）：只发给戴帽者自己，HUD 用它画判定字。 */
     public static void sendQteState(ServerPlayer player, int combo, int rating, int dodges) {
-        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new QteStateMessage(combo, rating, dodges));
+        sendQteState(player, combo, rating, dodges, -1);
+    }
+
+    /**
+     * 同上，外加 {@code judgedTick}：这一记判定落在谱面的哪一拍（刻）。
+     *
+     * <p>HUD 靠它给**正确的那颗键**上色 —— 以前只发一个「刚判了一下」，客户端拿到达时刻
+     * 去就近猜，MISS 经常被画到下一颗键上（那颗其实还没按）。
+     * {@code -1} = 不带（连击里程碑之类的包），客户端退回就近猜。
+     */
+    public static void sendQteState(ServerPlayer player, int combo, int rating, int dodges,
+                                    int judgedTick) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new QteStateMessage(combo, rating, dodges,
+                        com.hatmod.BrainrotQte.accOf(player.getUUID()),
+                        com.hatmod.BrainrotQte.scoreOf(player.getUUID()),
+                        com.hatmod.BrainrotQte.missesOf(player.getUUID()),
+                        com.hatmod.BrainrotQte.hitsOf(player.getUUID()),
+                        com.hatmod.BrainrotQte.perfectsOf(player.getUUID()),
+                        com.hatmod.BrainrotQte.goodsOf(player.getUUID()),
+                        judgedTick));
+    }
+
+    /** 「声波放出来了」：黑白闪 + 锁视线跟着这一包一起开始，没放出来就都不给。 */
+    public static void sendSonicFlash(ServerPlayer player, int monoTicks, int lockTicks) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new SonicFlashMessage(monoTicks, lockTicks));
     }
 
     /** 「闪避落空」：只告诉挨打的那一个玩家，让他的屏幕闪一下紫边。 */
@@ -171,6 +242,16 @@ public final class HatNetwork {
     }
 
     /**
+     * 通知某个玩家：他把 Teto 的舞曲静音 / 恢复了。
+     *
+     * <p>舞曲在客户端自己放（音量要能随时压到 0），所以「按了木棍」这件事只能由服务端
+     * 收交互再转告本人 —— 客户端那份 {@code PlayerInteractEvent.EntityInteract} 两边都靠不住。
+     */
+    public static void sendTetoMusicToggle(ServerPlayer player) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new TetoMusicMessage());
+    }
+
+    /**
      * 通知某个玩家：开始一段黑白「预知」画面，持续 {@code ticks} 刻。
      *
      * <p>只发给**发动者自己** —— 黑白的是他的视角（黑帽的「我早已料到」），
@@ -195,7 +276,8 @@ public final class HatNetwork {
     public static void sendSettings(ServerPlayer player, int feedback) {
         CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                 new SettingsSyncMessage(snapshot(), HatSettings.ownBgmPriority(), HatSettings.forceBreak(),
-                        routeSnapshot(), HatSettings.brainrotDamageScale(), feedback));
+                        routeSnapshot(), HatSettings.brainrotDamageScale(),
+                        HatSettings.brainrotPercentScale(), HatSettings.tetoVanishChance(), feedback));
     }
 
     /** 广播给所有人（feedback = 无提示）。 */
@@ -205,7 +287,9 @@ public final class HatNetwork {
         }
         CHANNEL.send(PacketDistributor.ALL.noArg(),
                 new SettingsSyncMessage(snapshot(), HatSettings.ownBgmPriority(), HatSettings.forceBreak(),
-                        routeSnapshot(), HatSettings.brainrotDamageScale(), FEEDBACK_NONE));
+                        routeSnapshot(), HatSettings.brainrotDamageScale(),
+                        HatSettings.brainrotPercentScale(), HatSettings.tetoVanishChance(),
+                        FEEDBACK_NONE));
     }
 
     /**
@@ -217,7 +301,8 @@ public final class HatNetwork {
                                           float healthDamageFloor, String damageType,
                                           boolean ownBgmPriority, boolean forceBreak,
                                           float routeBlack, float routeWhite, float routeRed,
-                                          String forcedRoute, float brainrotDamageScale) {
+                                          String forcedRoute, float brainrotDamageScale,
+                                          float brainrotPercentScale, float tetoVanishChance) {
         // 客户端也留一行日志：排查「点了保存没生效」时，先看日志里有没有这一行，
         // 就能分清到底是「按钮没点到」还是「包没到服务端」。
         HatMod.LOGGER.info("[HatMod] 发出调参请求：{} 蓄力 {}t，照射 {}t，固定伤害 {}，附加 {}，下限 {}，类型 {}，"
@@ -226,7 +311,8 @@ public final class HatNetwork {
                 ownBgmPriority, routeBlack, routeWhite, routeRed, forcedRoute, brainrotDamageScale);
         CHANNEL.sendToServer(new SettingsUpdateMessage(type, chargeTicks, flashTicks,
                 damagePerTick, healthDamageRatio, healthDamageFloor, damageType,
-                ownBgmPriority, forceBreak, routeBlack, routeWhite, routeRed, forcedRoute, brainrotDamageScale));
+                ownBgmPriority, forceBreak, routeBlack, routeWhite, routeRed, forcedRoute,
+                brainrotDamageScale, brainrotPercentScale, tetoVanishChance));
     }
 
     /** 「全」路线相关的只读快照：三条帧伤 + 强制路线。 */
@@ -418,25 +504,70 @@ public final class HatNetwork {
         }
     }
 
+    /** 客户端：打拍键 / 右键现在是按下还是松开了（只在变化时发一次）。 */
+    public static void sendQteHold(boolean holding) {
+        CHANNEL.sendToServer(new QteHoldMessage(holding));
+    }
+
+    /**
+     * 「按住」状态（C2S）：长音按住的判定要用它 ——
+     * 以前长音一进来就自动涨连击，等于「按没按都一样」。
+     */
+    public record QteHoldMessage(boolean holding) {
+
+        public static void encode(QteHoldMessage msg, FriendlyByteBuf buf) {
+            buf.writeBoolean(msg.holding());
+        }
+
+        public static QteHoldMessage decode(FriendlyByteBuf buf) {
+            return new QteHoldMessage(buf.readBoolean());
+        }
+
+        public static void handle(QteHoldMessage msg, Supplier<NetworkEvent.Context> ctx) {
+            NetworkEvent.Context context = ctx.get();
+            context.enqueueWork(() -> {
+                ServerPlayer player = context.getSender();
+                if (player != null) {
+                    BrainrotQte.setHolding(player, msg.holding());
+                }
+            });
+            context.setPacketHandled(true);
+        }
+    }
+
     /**
      * 「打拍」的最新状态（S2C）：连击数 + 最近一次判定（PERFECT / GOOD / MISS）。
      */
-    public record QteStateMessage(int combo, int rating, int dodges) {
+    public record QteStateMessage(int combo, int rating, int dodges, int acc,
+                                  int score, int misses, int hits,
+                                  int perfects, int goods, int judgedTick) {
 
         public static void encode(QteStateMessage msg, FriendlyByteBuf buf) {
             buf.writeVarInt(msg.combo());
             buf.writeVarInt(msg.rating());
             buf.writeVarInt(msg.dodges());
+            buf.writeVarInt(msg.acc());
+            buf.writeVarInt(msg.score());
+            buf.writeVarInt(msg.misses());
+            buf.writeVarInt(msg.hits());
+            buf.writeVarInt(msg.perfects());
+            buf.writeVarInt(msg.goods());
+            buf.writeVarInt(msg.judgedTick());
         }
 
         public static QteStateMessage decode(FriendlyByteBuf buf) {
-            return new QteStateMessage(buf.readVarInt(), buf.readVarInt(), buf.readVarInt());
+            return new QteStateMessage(buf.readVarInt(), buf.readVarInt(),
+                    buf.readVarInt(), buf.readVarInt(),
+                    buf.readVarInt(), buf.readVarInt(), buf.readVarInt(),
+                    buf.readVarInt(), buf.readVarInt(), buf.readVarInt());
         }
 
         public static void handle(QteStateMessage msg, Supplier<NetworkEvent.Context> ctx) {
             NetworkEvent.Context context = ctx.get();
             context.enqueueWork(() -> com.hatmod.client.BrainrotQteClient.onState(
-                    msg.combo(), msg.rating(), msg.dodges()));
+                    msg.combo(), msg.rating(), msg.dodges(), msg.acc(),
+                    msg.score(), msg.misses(), msg.hits(), msg.perfects(), msg.goods(),
+                    msg.judgedTick()));
             context.setPacketHandled(true);
         }
     }
@@ -445,6 +576,23 @@ public final class HatNetwork {
      * 「闪避落空」的通知（S2C，空包）：只发给被闪掉这一击的玩家，
      * HUD 收到就画一整屏紫边 + 大字「闪避」。
      */
+    public record TetoMusicMessage() {
+
+        public static void encode(TetoMusicMessage msg, FriendlyByteBuf buf) {
+            // 空包：只表示「按了一下木棍，切换静音」
+        }
+
+        public static TetoMusicMessage decode(FriendlyByteBuf buf) {
+            return new TetoMusicMessage();
+        }
+
+        public static void handle(TetoMusicMessage msg, Supplier<NetworkEvent.Context> ctx) {
+            NetworkEvent.Context context = ctx.get();
+            context.enqueueWork(() -> com.hatmod.client.TetoDanceMusic.onServerToggle());
+            context.setPacketHandled(true);
+        }
+    }
+
     public record QteDodgeMessage() {
 
         public static void encode(QteDodgeMessage msg, FriendlyByteBuf buf) {
@@ -458,6 +606,31 @@ public final class HatNetwork {
         public static void handle(QteDodgeMessage msg, Supplier<NetworkEvent.Context> ctx) {
             NetworkEvent.Context context = ctx.get();
             context.enqueueWork(() -> com.hatmod.client.BrainrotQteClient.onDodge());
+            context.setPacketHandled(true);
+        }
+    }
+
+    /**
+     * 「声波放出来了」（S2C）：带黑白闪 / 锁视线各多少刻。
+     *
+     * <p>声波现在要踩中那一拍才放（{@code BrainrotCycle.onNoteHit}），
+     * 所以这两个效果也改成跟着这条包走 —— 打空了就一样都不给。
+     */
+    public record SonicFlashMessage(int monoTicks, int lockTicks) {
+
+        public static void encode(SonicFlashMessage msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.monoTicks());
+            buf.writeVarInt(msg.lockTicks());
+        }
+
+        public static SonicFlashMessage decode(FriendlyByteBuf buf) {
+            return new SonicFlashMessage(buf.readVarInt(), buf.readVarInt());
+        }
+
+        public static void handle(SonicFlashMessage msg, Supplier<NetworkEvent.Context> ctx) {
+            NetworkEvent.Context context = ctx.get();
+            context.enqueueWork(() -> com.hatmod.client.SonicFlash.start(
+                    msg.monoTicks(), msg.lockTicks()));
             context.setPacketHandled(true);
         }
     }
@@ -481,7 +654,9 @@ public final class HatNetwork {
     }
 
     public record SettingsSyncMessage(List<Snapshot> snapshots, boolean ownBgmPriority, boolean forceBreak,
-                                      RouteSnapshot route, float brainrotDamageScale, int feedback) {
+                                      RouteSnapshot route, float brainrotDamageScale,
+                                      float brainrotPercentScale, float tetoVanishChance,
+                                      int feedback) {
 
         /** 一顶帽子的参数快照；ordinal 对应 {@link HatType} 的序号。 */
         public record Snapshot(int ordinal, int chargeTicks, int flashTicks, float damagePerTick,
@@ -497,6 +672,8 @@ public final class HatNetwork {
             buf.writeFloat(msg.route().red());
             buf.writeUtf(msg.route().forcedRoute());
             buf.writeFloat(msg.brainrotDamageScale());
+            buf.writeFloat(msg.brainrotPercentScale());
+            buf.writeFloat(msg.tetoVanishChance());
             buf.writeVarInt(msg.snapshots().size());
             for (Snapshot snapshot : msg.snapshots()) {
                 buf.writeVarInt(snapshot.ordinal());
@@ -515,6 +692,8 @@ public final class HatNetwork {
             boolean forceBreak = buf.readBoolean();
             RouteSnapshot route = new RouteSnapshot(buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf());
             float brainrotDamageScale = buf.readFloat();
+            float brainrotPercentScale = buf.readFloat();
+            float tetoVanishChance = buf.readFloat();
             int size = buf.readVarInt();
             List<Snapshot> list = new ArrayList<>(size);
             HatType[] types = HatType.values();
@@ -525,7 +704,8 @@ public final class HatNetwork {
                         buf.readVarInt(), buf.readVarInt(), buf.readFloat(), buf.readFloat(),
                         buf.readFloat(), buf.readUtf()));
             }
-            return new SettingsSyncMessage(list, ownBgmPriority, forceBreak, route, brainrotDamageScale, feedback);
+            return new SettingsSyncMessage(list, ownBgmPriority, forceBreak, route,
+                    brainrotDamageScale, brainrotPercentScale, tetoVanishChance, feedback);
         }
 
         public static void handle(SettingsSyncMessage msg, Supplier<NetworkEvent.Context> ctx) {
@@ -540,7 +720,8 @@ public final class HatNetwork {
                                         float healthDamageFloor, String damageType,
                                         boolean ownBgmPriority, boolean forceBreak,
                                         float routeBlack, float routeWhite, float routeRed,
-                                        String forcedRoute, float brainrotDamageScale) {
+                                        String forcedRoute, float brainrotDamageScale,
+                                        float brainrotPercentScale, float tetoVanishChance) {
 
         public static void encode(SettingsUpdateMessage msg, FriendlyByteBuf buf) {
             buf.writeVarInt(msg.type().ordinal());
@@ -557,6 +738,8 @@ public final class HatNetwork {
             buf.writeFloat(msg.routeRed());
             buf.writeUtf(msg.forcedRoute());
             buf.writeFloat(msg.brainrotDamageScale());
+            buf.writeFloat(msg.brainrotPercentScale());
+            buf.writeFloat(msg.tetoVanishChance());
         }
 
         public static SettingsUpdateMessage decode(FriendlyByteBuf buf) {
@@ -566,7 +749,7 @@ public final class HatNetwork {
             return new SettingsUpdateMessage(type, buf.readVarInt(), buf.readVarInt(),
                     buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readUtf(),
                     buf.readBoolean(), buf.readBoolean(), buf.readFloat(), buf.readFloat(), buf.readFloat(),
-                    buf.readUtf(), buf.readFloat());
+                    buf.readUtf(), buf.readFloat(), buf.readFloat(), buf.readFloat());
         }
 
         public static void handle(SettingsUpdateMessage msg, Supplier<NetworkEvent.Context> ctx) {
@@ -599,6 +782,8 @@ public final class HatNetwork {
                 HatSettings.setRouteDamage(msg.routeBlack(), msg.routeWhite(), msg.routeRed());
                 HatSettings.setForcedRoute(msg.forcedRoute());
                 HatSettings.setBrainrotDamageScale(msg.brainrotDamageScale());
+                HatSettings.setBrainrotPercentScale(msg.brainrotPercentScale());
+                HatSettings.setTetoVanishChance(msg.tetoVanishChance());
                 HatMod.LOGGER.info("[HatMod] {} 参数已更新：蓄力 {}t，照射 {}t，固定伤害 {}，附加 {}，下限 {}，类型 {}；"
                                 + "自己的BGM优先 {}；路线帧伤 黑{} 白{} 红{}，强制路线 {}；脑蚀倍率 {}",
                         msg.type().id(), HatSettings.chargeTicks(msg.type()), HatSettings.flashTicks(msg.type()),

@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "hatmod:item/tang_white_spawn_egg"
+  }
+}

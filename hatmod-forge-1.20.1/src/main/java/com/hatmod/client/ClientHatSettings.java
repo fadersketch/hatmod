@@ -31,6 +31,12 @@ public final class ClientHatSettings {
     /** 「脑蚀」每帧伤害倍率，随服务端同步过来；没同步前按出厂值（1.5）。 */
     private static float brainrotDamageScale = HatSettings.DEFAULT_BRAINROT_DAMAGE_SCALE;
 
+    /** 「脑蚀」百分比伤害倍率，随服务端同步过来；没同步前按出厂值（0.5）。 */
+    private static float brainrotPercentScale = HatSettings.DEFAULT_BRAINROT_PERCENT_SCALE;
+
+    /** 散养 Teto 每次闲聊消失的概率，随服务端同步过来；没同步前按出厂值（0.1%）。 */
+    private static float tetoVanishChance = HatSettings.DEFAULT_TETO_VANISH_CHANCE;
+
     private ClientHatSettings() {
     }
 
@@ -77,6 +83,22 @@ public final class ClientHatSettings {
 
     public static void setBrainrotDamageScale(float value) {
         brainrotDamageScale = value;
+    }
+
+    public static float brainrotPercentScale() {
+        return brainrotPercentScale;
+    }
+
+    public static void setBrainrotPercentScale(float value) {
+        brainrotPercentScale = value;
+    }
+
+    public static float tetoVanishChance() {
+        return tetoVanishChance;
+    }
+
+    public static void setTetoVanishChance(float value) {
+        tetoVanishChance = value;
     }
 
     /** 一份只读参数（就是个值对象，字段 public 方便界面直接读）。 */
@@ -135,6 +157,8 @@ public final class ClientHatSettings {
         ownBgmPriority = msg.ownBgmPriority();
         forceBreak = msg.forceBreak();
         brainrotDamageScale = msg.brainrotDamageScale();
+        brainrotPercentScale = msg.brainrotPercentScale();
+        tetoVanishChance = msg.tetoVanishChance();
         setRoute(msg.route().black(), msg.route().white(), msg.route().red(), msg.route().forcedRoute());
 
         net.minecraft.client.Minecraft minecraft = net.minecraft.client.Minecraft.getInstance();

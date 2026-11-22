@@ -61,12 +61,30 @@ public final class HatMusic {
     }
 
     /** 「脑蚀」一轮开始：播它的专用曲（MONTAGEM ALQUIMIA）。 */
+    /**
+     * 已经广播过「脑蚀在响」的戴帽者。
+     *
+     * <p>帽子没了之后 {@code BrainrotCycle} 每刻都会来要一次「停」，有了这张表就只发
+     * 一次停止包 —— 但「帽子一不在就一定要停」这条**不再依赖链路还在不在**：
+     * 从饰品栏里把帽子拿走时，链路有可能已经先被别处清掉了，音乐就留在那儿一直响。
+     */
+    private static final java.util.Set<java.util.UUID> BRAINROT_ON = new java.util.HashSet<>();
+
     public static void playBrainrot(ServerLevel level, LivingEntity wearer) {
-        notify(level, wearer, BRAINROT_ORDINAL, true);
+        if (BRAINROT_ON.add(wearer.getUUID())) {
+            notify(level, wearer, BRAINROT_ORDINAL, true);
+        }
     }
 
     public static void stopBrainrot(ServerLevel level, LivingEntity wearer) {
-        notify(level, wearer, BRAINROT_ORDINAL, false);
+        if (BRAINROT_ON.remove(wearer.getUUID())) {
+            notify(level, wearer, BRAINROT_ORDINAL, false);
+        }
+    }
+
+    /** 重进游戏 / 换世界：把「在响」的记录忘掉（客户端那边也已经没有这条声道了）。 */
+    public static void forgetBrainrot(java.util.UUID wearer) {
+        BRAINROT_ON.remove(wearer);
     }
 
     /**

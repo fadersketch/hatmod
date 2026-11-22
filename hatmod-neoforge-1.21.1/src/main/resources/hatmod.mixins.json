@@ -1,12 +1,19 @@
 {
-  "required": true,
+  "required": false,
   "minVersion": "0.8",
-  "package": "com.hatmod.mixin",
+  "package": "com.hatmod.guard.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
-    "WebBlockMixin"
+    "LivingEntityMixin",
+    "EntityMixin",
+    "SynchedEntityDataMixin"
+  ],
+  "client": [
+    "GhostScareBlockMixin",
+    "GhostMusicHideMixin",
+    "GhostSoundBlockMixin"
   ],
   "injectors": {
-    "defaultRequire": 1
+    "defaultRequire": 0
   }
 }

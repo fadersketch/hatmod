@@ -8,6 +8,7 @@ import net.minecraftforge.client.event.EntityRenderersEvent;
 import net.minecraftforge.client.event.RegisterGuiOverlaysEvent;
 import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
 import net.minecraftforge.client.event.RegisterParticleProvidersEvent;
+import net.minecraftforge.client.gui.overlay.VanillaGuiOverlay;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.common.Mod;
@@ -35,6 +36,10 @@ public final class HatModClient {
         event.registerEntityRenderer(com.hatmod.HatSummons.SUMMON.get(), HatSummonRenderer::new);
         // 「脑蚀」一轮里的后室 Teto：序列帧平面贴图
         event.registerEntityRenderer(com.hatmod.HatSummons.TETO.get(), TetoRenderer::new);
+        event.registerEntityRenderer(com.hatmod.HatSummons.KHragg.get(), KhraggRenderer::new);
+        // 链路里跟着玩家走的同伴（唐嘉琦）：同样是序列帧平面贴图
+        event.registerEntityRenderer(com.hatmod.HatSummons.TANG.get(), TangJiaqiRenderer::new);
+        event.registerEntityRenderer(com.hatmod.HatSummons.TANG_WHITE.get(), TangJiaqiWhiteRenderer::new);
     }
 
     /**
@@ -65,11 +70,13 @@ public final class HatModClient {
      */
     @SubscribeEvent
     public static void registerGuiOverlays(RegisterGuiOverlaysEvent event) {
+        // 开局压暗的冷色滤镜：压在原版 HUD 下面，只影响世界画面
+        event.registerBelow(VanillaGuiOverlay.VIGNETTE.id(), "brainrot_intro_dim",
+                (gui, graphics, partialTick, width, height) -> QteHud.renderIntroDim(graphics));
         event.registerAboveAll("green_hearts",
                 (gui, graphics, partialTick, width, height) -> GreenHeartRender.render(graphics, width, height));
-        // 「脑蚀」打拍的判定轨道（拍点滑条 + PERFECT/GOOD/MISS 判定字）
-        event.registerAboveAll("qte_hud",
-                (gui, graphics, partialTick, width, height) -> QteHud.render(graphics));
+        // 判定轨道不注册在这里 —— 注册成 HUD 图层的话，系统消息一多就会被聊天栏盖住，
+        // 而这条轨道是要看着按的。改到 RenderGuiEvent.Post 里画，见 QteHud#onRenderGuiPost。
         // 「脑蚀」照射期的整屏紫色辉光（高光时刻的整体画面强化）
         event.registerAboveAll("brainrot_glow",
                 (gui, graphics, partialTick, width, height) -> BrainrotGlow.render(graphics));
@@ -83,10 +90,11 @@ public final class HatModClient {
     }
 
     /**
-     * 给玩家补一层「脑蚀」帽冠正面的画像。
+     * 给玩家补两层跟帽子有关的渲染。
      *
-     * <p>帽冠前脸在护甲贴图里只有 7×5 个像素，画不下人像，所以单独走一层
+     * <p>「脑蚀」帽冠正脸在护甲贴图里只有 7×5 个像素，画不下人像，所以单独走一层
      * {@link BrainHatFaceLayer}：它自己绑一张 112×80 的贴图，跟着头的姿态走。
+     * 另一个是 {@link HatGlowLayer}：光柱照射期间给帽子本体套一层加色光。
      * 玩家是唯一会戴这顶帽子的（护甲栏 / 饰品栏），所以只挂到玩家渲染器上。
      */
     @SubscribeEvent
@@ -95,6 +103,7 @@ public final class HatModClient {
             PlayerRenderer renderer = event.getSkin(skin);
             if (renderer != null) {
                 renderer.addLayer(new BrainHatFaceLayer<>(renderer));
+                renderer.addLayer(new HatGlowLayer<>(renderer));
             }
         }
     }

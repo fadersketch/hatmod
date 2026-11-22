@@ -36,6 +36,15 @@ public final class HatItems {
      * 物品自带的护甲属性，由 {@code HatAbilities.applyCurioArmor} 按这个数补一条。
      */
     public static final int HAT_ARMOR = 2;
+
+    /**
+     * 两顶帽子自带的基础**盔甲韧性**：40 —— 一整套下界合金也才 12。
+     *
+     * <p>帽子本身只有 2 点护甲，真正扛大伤害的是这一条：韧性压的是「穿甲 / 破甲」那部分
+     * （高单发、法术穿透、Boss 真伤都从这里走）。护甲值那 2 点在穿甲面前基本等于没有，
+     * 所以把韧性拉得很高，帽子才是「一件硬得离谱的布」。
+     */
+    public static final float HAT_TOUGHNESS = 40.0F;
     public static final DeferredRegister<Item> ITEMS =
             DeferredRegister.create(ForgeRegistries.ITEMS, HatMod.MOD_ID);
 
@@ -55,7 +64,17 @@ public final class HatItems {
      * 幽匿催发体」。它不是帽子：{@link #isHat} 里不能放行它，否则戴上它会顶掉真正的帽子。
      */
     public static final RegistryObject<Item> MYSTERIOUS_DRILL =
-            ITEMS.register("mysterious_drill", () -> new Item(new Item.Properties()));
+            ITEMS.register("mysterious_drill", () -> new Item(new Item.Properties()) {
+                @Override
+                public void appendHoverText(ItemStack stack, Level level,
+                                            java.util.List<Component> tooltip,
+                                            TooltipFlag flag) {
+                    tooltip.add(Component.translatable("hatmod.drill.desc")
+                            .withStyle(ChatFormatting.GRAY));
+                    tooltip.add(Component.translatable("hatmod.drill.usage")
+                            .withStyle(ChatFormatting.GRAY));
+                }
+            });
 
     /**
      * 「后室 Teto」的刷怪蛋：只放在创造物品栏里。
@@ -66,7 +85,71 @@ public final class HatItems {
     public static final RegistryObject<Item> TETO_SPAWN_EGG =
             ITEMS.<Item>register("backrooms_teto_spawn_egg",
                     () -> new net.minecraftforge.common.ForgeSpawnEggItem(
-                            HatSummons.TETO::get, 0x2B0B18, 0xD8323C, new Item.Properties()));
+                            HatSummons.TETO::get, 0x2B0B18, 0xD8323C, new Item.Properties()) {
+                        @Override
+                        public int getColor(int tintIndex) {
+                            // 自带专属贴图（红毛钻头），别再让原版按双层颜色染色
+                            return 0xFFFFFF;
+                        }
+
+                        @Override
+                        public void appendHoverText(ItemStack stack, Level level,
+                                                    java.util.List<Component> tooltip,
+                                                    TooltipFlag flag) {
+                            tooltip.add(Component.translatable("hatmod.teto.desc")
+                                    .withStyle(ChatFormatting.LIGHT_PURPLE));
+                            addUsageLines(tooltip, "hatmod.teto.usage", 1, 8);
+                        }
+                    });
+
+    /**
+     * 「Khragg」的刷怪蛋：他是开发者的化身，做彩蛋真好玩 —— 只能从这里 / 指令生成。
+     */
+    public static final RegistryObject<Item> KHragg_SPAWN_EGG =
+            ITEMS.<Item>register("khragg_spawn_egg",
+                    () -> new net.minecraftforge.common.ForgeSpawnEggItem(
+                            HatSummons.KHragg::get, 0xB03030, 0x274B8F, new Item.Properties()) {
+                        @Override
+                        public int getColor(int tintIndex) {
+                            // 自带专属头像贴图，别再让原版按双层颜色染色
+                            return 0xFFFFFF;
+                        }
+
+                        @Override
+                        public void appendHoverText(ItemStack stack, Level level,
+                                                    java.util.List<Component> tooltip,
+                                                    TooltipFlag flag) {
+                            tooltip.add(Component.translatable("hatmod.khragg.desc")
+                                    .withStyle(ChatFormatting.GOLD));
+                            addUsageLines(tooltip, "hatmod.khragg.usage", 1, 3);
+                        }
+                    });
+
+    /**
+     * 唐嘉琦（白色）的刷怪蛋：放出来的是「野生」个体。
+     *
+     * <p>不认主：自己索敌（同白帽）、自己蓄力照射、自己放白帽的 BGM，节奏和白帽一样；
+     * 每照完一轮闪避补满 6 次。贴图直接用她蓄力时那张立绘（见 {@code models/item/}）。
+     */
+    public static final RegistryObject<Item> TANG_WHITE_SPAWN_EGG =
+            ITEMS.<Item>register("tang_white_spawn_egg",
+                    () -> new net.minecraftforge.common.ForgeSpawnEggItem(
+                            HatSummons.TANG_WHITE::get, 0xF2F2F2, 0x9AA0A6, new Item.Properties()) {
+                        @Override
+                        public int getColor(int tintIndex) {
+                            // 自带专属贴图（蓄力立绘），别再让原版按双层颜色染色
+                            return 0xFFFFFF;
+                        }
+
+                        @Override
+                        public void appendHoverText(ItemStack stack, Level level,
+                                                    java.util.List<Component> tooltip,
+                                                    TooltipFlag flag) {
+                            tooltip.add(Component.translatable("hatmod.tang_white.desc")
+                                    .withStyle(ChatFormatting.WHITE));
+                            addUsageLines(tooltip, "hatmod.tang_white.usage", 1, 3);
+                        }
+                    });
 
     /**
      * 「脑蚀」：形状和建模同黑帽（材质/贴图直接复用黑帽那张），
@@ -118,7 +201,13 @@ public final class HatItems {
             public <T extends net.minecraft.world.entity.LivingEntity> int damageItem(
                     ItemStack stack, int amount, T entity, java.util.function.Consumer<T> onBroken) {
                 // 自定义耐久玩法：3 秒内最多磨损 1 点（见 HatDurability）
-                return HatDurability.limitDamage(stack, amount, entity);
+                int real = HatDurability.limitDamage(stack, amount, entity);
+                // 这一下会把脑蚀磨穿：记一笔。链路那边按「被敌人弄掉的」说一句（见 BrainrotCycle）
+                if (real > 0 && entity != null && stack.is(BRAIN_HAT.get())
+                        && stack.getDamageValue() + real >= stack.getMaxDamage()) {
+                    HatSettings.markHatBroken(entity.getUUID(), entity.level().getGameTime());
+                }
+                return real;
             }
 
             @Override
@@ -164,6 +253,8 @@ public final class HatItems {
                 // 原版那句「护甲值 +2」在这里被整个覆写掉了（没调 super），自己补一行
                 tooltip.add(Component.translatable("item.hatmod.hat.armor", HAT_ARMOR)
                         .withStyle(ChatFormatting.BLUE));
+                tooltip.add(Component.translatable("item.hatmod.hat.toughness", (int) HAT_TOUGHNESS)
+                        .withStyle(ChatFormatting.BLUE));
                 // 标语：「全」用专属的「新神已至」，三顶原色帽是「神本无相」；
                 // 脑蚀不摆那句，改标它这一整轮用的 BGM
                 if (this == BRAIN_HAT.get()) {
@@ -187,8 +278,50 @@ public final class HatItems {
                                 HatDurability.MIN_INTERVAL_TICKS / 20,
                                 HatDurability.REPAIR_PER_LEATHER)
                         .withStyle(ChatFormatting.DARK_GRAY));
+                // 模组没有说明书：怎么玩全部写在物品上 —— 一条交互一行，触发条件打头
+                if (this == BRAIN_HAT.get()) {
+                    addUsageLines(tooltip, "item.hatmod.brain_hat.usage", 1, 2);
+                    tooltip.add(Component.translatable("item.hatmod.brain_hat.usage3",
+                                    com.hatmod.client.QteHud.forceStartKeyName())
+                            .withStyle(ChatFormatting.GRAY));
+                    tooltip.add(Component.translatable("item.hatmod.brain_hat.usage4",
+                                    com.hatmod.client.QteHud.beatKeyName(),
+                                    com.hatmod.client.QteHud.useKeyName())
+                            .withStyle(ChatFormatting.GRAY));
+                    addUsageLines(tooltip, "item.hatmod.brain_hat.usage", 5, 8);
+                } else {
+                    if (this == ALL_HAT.get()) {
+                        addUsageLines(tooltip, "item.hatmod.all_hat.usage", 1, 3);
+                        tooltip.add(Component.translatable("item.hatmod.all_hat.usage4",
+                                        com.hatmod.client.QteHud.forceStartKeyName())
+                                .withStyle(ChatFormatting.GRAY));
+                    } else {
+                        addUsageLines(tooltip, "item.hatmod.hat.usage", 1, 2);
+                        tooltip.add(Component.translatable("item.hatmod.hat.usage3",
+                                        com.hatmod.client.QteHud.forceStartKeyName())
+                                .withStyle(ChatFormatting.GRAY));
+                        if (this == BLACK_HAT.get()) {
+                            tooltip.add(Component.translatable("item.hatmod.hat.play.black")
+                                    .withStyle(ChatFormatting.GRAY));
+                        } else if (this == WHITE_HAT.get()) {
+                            tooltip.add(Component.translatable("item.hatmod.hat.play.white")
+                                    .withStyle(ChatFormatting.GRAY));
+                        } else if (this == RED_HAT.get()) {
+                            tooltip.add(Component.translatable("item.hatmod.hat.play.red")
+                                    .withStyle(ChatFormatting.GRAY));
+                        }
+                    }
+                }
             }
         });
+    }
+
+    /** 连续加 usage{from}..usage{to}（无参数条目）：一条交互一行，GRAY 样式。 */
+    private static void addUsageLines(List<Component> tooltip, String base, int from, int to) {
+        for (int i = from; i <= to; i++) {
+            tooltip.add(Component.translatable(base + i)
+                    .withStyle(ChatFormatting.GRAY));
+        }
     }
 
     /** 这顶帽子对应哪套数值；不是帽子则返回 null。 */
@@ -203,32 +336,34 @@ public final class HatItems {
         if (item == RED_HAT.get()) {
             return HatType.RED;
         }
-        if (item == ALL_HAT.get()) {
-            return HatType.ALL;
-        }
-        return null;
+        return item == ALL_HAT.get() ? HatType.ALL : null;
     }
 
     /**
-     * 头上戴的是不是本模组的帽子。
+     * 这件东西算不算「可以戴的帽子」。
      *
-     * <p>「脑蚀」不在 {@link #typeOf} 的四条路线里（它走自己的剧本），但它**也是帽子** ——
-     * 少了这个分支，{@code HatAbilities.hatStack} 会把脑蚀当成普通头盔，整条脑蚀循环都起不来。
+     * <p>脑蚀也算帽子（它有自己的完整链路）；「神秘红毛钻头」**不算** ——
+     * 放行它的话，戴在头盔栏里就会顶掉真正的帽子，链路就断了。
      */
     public static boolean isHat(ItemStack stack) {
         return typeOf(stack) != null || stack.is(BRAIN_HAT.get());
     }
 
+    /** 把物品注册进总线。 */
     public static void register(IEventBus modBus) {
         ITEMS.register(modBus);
     }
 
-    /** 只在头盔部位提供 2 点护甲，其余为 0；贴图名带命名空间以便定位到 hatmod 自己的贴图。 */
+    /**
+     * 帽子的护甲材质：四顶帽子各注册一份，名字就是贴图路径
+     * （{@code hatmod:black_hat} → {@code textures/models/armor/black_hat_layer_1.png}）。
+     *
+     * <p>护甲值/韧性数值只对头盔槽有意义（帽子只占头盔槽），其余槽位归零。
+     * 修复材料是皮革（和耐久说明里那句「1 个皮革修复 X 点」对应）。
+     */
     private record HatArmorMaterial(String colorName) implements ArmorMaterial {
         @Override
         public int getDurabilityForType(ArmorItem.Type type) {
-            // 1.20.1 没有 ArmorItem.Type#getDurability，直接用「12 × 头盔系数 11」的结果。
-            // 帽子走自定义耐久（HatDurability.MAX_DAMAGE = 300），这里不再用原版系数。
             return type == ArmorItem.Type.HELMET ? HatDurability.MAX_DAMAGE : 0;
         }
 
@@ -254,13 +389,12 @@ public final class HatItems {
 
         @Override
         public String getName() {
-            // 带命名空间：Forge 会解析成 hatmod:textures/models/armor/<colorName>_layer_1.png
-            return HatMod.MOD_ID + ":" + colorName;
+            return HatMod.MOD_ID + ":" + this.colorName;
         }
 
         @Override
         public float getToughness() {
-            return 0.0F;
+            return HAT_TOUGHNESS;
         }
 
         @Override

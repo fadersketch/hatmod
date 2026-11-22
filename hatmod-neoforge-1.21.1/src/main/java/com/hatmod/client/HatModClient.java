@@ -10,6 +10,7 @@ import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.neoforge.client.event.EntityRenderersEvent;
+import net.neoforged.neoforge.client.event.RegisterGuiLayersEvent;
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
 import net.neoforged.neoforge.client.event.RegisterParticleProvidersEvent;
 
@@ -49,11 +50,29 @@ public final class HatModClient {
         event.registerEntityRenderer(com.hatmod.HatSummons.SUMMON.get(), HatSummonRenderer::new);
         // 「脑蚀」一轮里的后室 Teto：序列帧平面贴图
         event.registerEntityRenderer(com.hatmod.HatSummons.TETO.get(), TetoRenderer::new);
+        event.registerEntityRenderer(com.hatmod.HatSummons.KHragg.get(), KhraggRenderer::new);
+        // 链路里跟着玩家走的同伴（唐嘉琦）：同样是序列帧平面贴图
+        event.registerEntityRenderer(com.hatmod.HatSummons.TANG.get(), TangJiaqiRenderer::new);
+        event.registerEntityRenderer(com.hatmod.HatSummons.TANG_WHITE.get(), TangJiaqiWhiteRenderer::new);
     }
 
     @SubscribeEvent
     public static void registerParticleProviders(RegisterParticleProvidersEvent event) {
         event.registerSpriteSet(HatParticles.FLASH_LIGHT.get(), FlashLightParticle.Provider::new);
+    }
+
+    /**
+     * 判定轨道挂在**最上层**（{@code registerAboveAll}）。
+     *
+     * <p>以前它在 {@code RenderGuiEvent.Post} 里画 —— 那个事件是在所有图层画完、
+     * 把 z 平移全部退掉之后才发的（z=0），而 NeoForge 每画一层就往前推一点 z，
+     * 所以「最后画」反而**垫在最底下**，聊天栏一多就把它盖住。作为一个真正的图层
+     * 注册，它才会拿到最大的 z。
+     */
+    @SubscribeEvent
+    public static void registerGuiLayers(RegisterGuiLayersEvent event) {
+        event.registerAboveAll(HatMod.id("qte_hud"),
+                (graphics, delta) -> QteHud.render(graphics));
     }
 
     /** 打拍键（默认 V）和强制开链路键（默认 P）：注册进按键设置，玩家可以自己改。 */
@@ -64,10 +83,11 @@ public final class HatModClient {
     }
 
     /**
-     * 给玩家补一层「脑蚀」帽冠正面的画像。
+     * 给玩家补两层跟帽子有关的渲染。
      *
-     * <p>帽冠前脸在护甲贴图里只有 7×5 个像素，画不下人像，所以单独走一层
+     * <p>「脑蚀」帽冠正脸在护甲贴图里只有 7×5 个像素，画不下人像，所以单独走一层
      * {@link BrainHatFaceLayer}：它自己绑一张 112×80 的贴图，跟着头的姿态走。
+     * 另一个是 {@link HatGlowLayer}：光柱照射期间给帽子本体套一层加色光。
      * 玩家是唯一会戴这顶帽子的（护甲栏 / 饰品栏），所以只挂到玩家渲染器上。
      */
     @SubscribeEvent
@@ -76,6 +96,7 @@ public final class HatModClient {
             PlayerRenderer renderer = event.getSkin(skin);
             if (renderer != null) {
                 renderer.addLayer(new BrainHatFaceLayer<>(renderer));
+                renderer.addLayer(new HatGlowLayer<>(renderer));
             }
         }
     }

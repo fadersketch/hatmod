@@ -40,15 +40,20 @@ final class HatAchievements {
     /**
      * 发成就。戴着帽子的未必是玩家（史莱姆、Teto 也可能），那种情况什么也不做。
      */
-    static void grant(LivingEntity wearer, String id) {
+    static boolean grant(LivingEntity wearer, String id) {
         if (!(wearer instanceof ServerPlayer player)) {
-            return;
+            return false;
         }
         Advancement advancement = player.serverLevel().getServer().getAdvancements()
                 .getAdvancement(HatMod.id(id));
-        if (advancement != null) {
-            player.getAdvancements().award(advancement, "impossible");
+        if (advancement == null) {
+            return false;
         }
+        if (player.getAdvancements().getOrStartProgress(advancement).isDone()) {
+            return false;               // 早拿到了，别再当成「刚达成」
+        }
+        player.getAdvancements().award(advancement, "impossible");
+        return true;
     }
 
     /** 「三色归一」：记下「全」这一轮走的路线，三条都走过了就发。 */

@@ -43,6 +43,15 @@ final class HatState {
     /** 客户端当前认为「在照射」吗（本模组自己的包同步的，不依赖状态效果）。 */
     boolean beamSynced;
     /**
+     * 本轮蓄力在等客户端回执「BGM 真的响起来了」再开始倒数。
+     *
+     * <p>不等的话，发包那一刻就开始数 18.2 秒，客户端起播只要慢半拍，光柱就提前于音乐；
+     * 第一轮往往没事（引擎闲着），第二轮开始就容易对不上。见 {@code HatAbilities#noteMusicStarted}。
+     */
+    boolean musicPending;
+    /** 已经等了几刻：客户端一直不回执（关声音 / 没装客户端）就按 {@code MUSIC_ACK_TIMEOUT} 兜底。 */
+    int musicWait;
+    /**
      * 当前光柱锁定的敌人实体 id，**每道光柱一个**（红帽附魔「光柱」会有多道）。
      * 没有目标时是空数组；用于避免重复发包。
      */
@@ -61,6 +70,8 @@ final class HatState {
         this.flashBlinks = 0;
         this.dominionFired = false;
         this.beamSynced = false;
+        this.musicPending = false;
+        this.musicWait = 0;
         this.targetIds = new int[0];
     }
 }
